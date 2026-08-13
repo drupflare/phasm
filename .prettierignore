@@ -1,0 +1,13 @@
+node_modules/
+vendor/
+assets/
+bun.lock
+LICENSE
+.husky/
+
+# Belt and braces. Prettier infers no parser for either extension today, so a directory
+# run skips them anyway; listing them keeps that a decision rather than an accident.
+# C is formatted by clang-format (.clang-format), and the rc files are `make` variable
+# assignments read with -include -- not shell, whatever the name suggests.
+*.c
+*.rc

@@ -1,0 +1,6 @@
+#!/bin/sh
+bunx lint-staged
+bash tools/lint-shell.sh
+if command -v shellcheck > /dev/null; then
+	find src tools -name '*.sh' -print0 | xargs -0 shellcheck
+fi
