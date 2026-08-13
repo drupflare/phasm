@@ -1,0 +1,7 @@
+* text eol=lf
+*.sh text eol=lf
+*.rc text eol=lf
+*.c text eol=lf
+*.wasm binary
+*.o binary
+*.a binary
