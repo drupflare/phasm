@@ -15,7 +15,7 @@ shipped php-wasm build works there and every extension has to be statically link
 - [Why Static](#-why-static)
 - [What Is Here](#-what-is-here)
 - [The Variants](#-the-variants)
-- [Prerequisites, and Why They Are Awkward](#-prerequisites)
+- [Prerequisites](#-prerequisites)
 - [Building Locally](#-building-locally)
 - [Inspecting a Build](#-inspecting-a-build)
 - [The Consumer Contract](#-the-consumer-contract)

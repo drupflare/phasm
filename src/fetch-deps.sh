@@ -151,7 +151,9 @@ else
 	echo "vrzno: fetching c3aa3b9"
 	[ -d "$THIRD/vrzno" ] || git clone https://github.com/seanmorris/vrzno.git "$THIRD/vrzno"
 	git -C "$THIRD/vrzno" checkout --quiet c3aa3b9
-	cp -R "$THIRD/vrzno" "$SRC/ext/vrzno"
+	# copied INSIDE the builder: php-src is created by the container, so its ext/ is not
+	# writable by the host user and a host-side cp fails with "Permission denied"
+	in_builder /src/third_party "cp -R vrzno php${PHP_VERSION}-src/ext/vrzno"
 fi
 
 if [ -d "$SRC/ext/yaml" ]; then
@@ -163,7 +165,7 @@ else
 		mkdir -p "$THIRD/php${PHP_VERSION}-yaml"
 		tar -xzf /tmp/yaml-2.3.0.tgz -C "$THIRD/php${PHP_VERSION}-yaml" --strip-components=1
 	}
-	cp -R "$THIRD/php${PHP_VERSION}-yaml" "$SRC/ext/yaml"
+	in_builder /src/third_party "cp -R php${PHP_VERSION}-yaml php${PHP_VERSION}-src/ext/yaml"
 fi
 
 echo
