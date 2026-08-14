@@ -405,8 +405,7 @@ jobs:
         if: ${{ github.event_name != 'pull_request' }}
         uses: actions/attest-build-provenance@v4
         with:
-          subject-name: phasm-${{ matrix.variant }}-${{ github.sha }}
-          subject-digest: sha256:${{ steps.archive.outputs.artifact-digest }}
+          subject-path: dist/*
 
       - name: Archive the Build Log on Failure
         if: failure()
