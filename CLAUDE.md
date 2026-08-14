@@ -112,6 +112,27 @@ Every one of these has already been paid for once.
   so a second changed variable makes the comparison worthless. `build.yml` dumps `dmesg` on failure
   so the next occurrence proves OOM instead of inferring it.
 
+## Getting per-object byte attribution without building a variant per question
+
+Most size questions here have been answered by building a whole variant and diffing, which is ~20
+minutes of QEMU per bit of information and is why "what does simplexml cost" is still unknown. A
+**link map** answers a dozen of them from one link: `wasm-ld -Map` attributes every symbol to the
+object file it came from.
+
+No code change is needed. `SYMBOL_FLAGS` defaults to **empty** (`Makefile:351`), is interpolated into
+`EXTRA_LDFLAGS_PROGRAM` (`Makefile:408`), and the `EXTRA_FLAGS+=${SYMBOL_FLAGS}` append at `:355` is
+guarded by `ifdef SYMBOLS` rather than by `SYMBOL_FLAGS`, so overriding it replaces nothing:
+
+```sh
+MAKE_EXTRA='SYMBOL_FLAGS=-Wl,-Map=/src/link-map.txt' bash src/build-variant.sh control <checkout>
+```
+
+Two constraints on reading the result. It has to be asked for **at link time** -- the shipping binary
+is stripped at `-O2`, so `strings` finds no symbol names and nothing is recoverable from the artifact
+afterwards. And the map reports **raw** bytes while the ceiling is **gzip**, which `-O3` already
+proved can move in opposite directions here, so treat the map as triage and confirm the top few
+candidates with a real build.
+
 ## Which numbers here are trustworthy
 
 **Byte sizes are.** Everything `inspect-build.sh` prints is read out of the produced artifact rather
