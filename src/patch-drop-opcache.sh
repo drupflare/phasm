@@ -79,17 +79,26 @@ if [ -f "$CONFIG_H" ] && grep -qE "^#define ZTS 1" "$CONFIG_H"; then
       and dropping opcache needs a stub this patch does not provide"
 fi
 
-# comment the registration out rather than deleting it, so the diff reads as a
-# deliberate removal and --verify has a marker to find
-awk -v n="$line" 'NR==n { print "dnl PHASM: opcache extension removed, see src/patch-drop-opcache.sh" } { print }' \
-	"$M4" > "$M4.new"
-mv "$M4.new" "$M4"
-# now neutralise the registration itself
-awk 'BEGIN { done = 0 }
-	/^[[:space:]]*PHP_NEW_EXTENSION\(\[?opcache/ && !done { print "dnl " $0; done = 1; next }
-	{ print }' "$M4" > "$M4.new"
-mv "$M4.new" "$M4"
-
+# Rewrite IN PLACE. php-src is created inside the builder container, so the host
+# can write an existing file but cannot create a sibling in that directory: an
+# earlier revision used `awk > config.m4.new` and CI failed with Permission denied.
+python3 -c "
+import sys
+path = sys.argv[1]
+lines = open(path).readlines()
+out = []
+done = False
+for line in lines:
+    st = line.lstrip()
+    if not done and st.startswith('PHP_NEW_EXTENSION([opcache'):
+        out.append('dnl PHASM: opcache extension removed, see src/patch-drop-opcache.sh' + chr(10))
+        out.append('dnl ' + line)
+        done = True
+        continue
+    out.append(line)
+assert done, 'PHP_NEW_EXTENSION(opcache) vanished between the check and the rewrite'
+open(path, 'w').writelines(out)
+" "$M4"
 patched || fail "the marker was not written; refusing to report success"
 still="$(ext_line || true)"
 [ -z "$still" ] || fail "PHP_NEW_EXTENSION(opcache) is still live at line $still after the edit"

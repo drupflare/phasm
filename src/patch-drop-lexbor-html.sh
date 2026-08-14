@@ -50,6 +50,11 @@
 # Keyed on the patched SHAPE, never on a marker comment, and FATAL when the
 # shape has moved -- a patch that silently skips is how this project shipped
 # eleven variants missing seven extensions.
+#
+# WHEN THE apply PATH IS IMPLEMENTED, the `sed -i.orig` below must be replaced by
+# an in-place rewrite. php-src is container-created, so the host cannot create a
+# sibling in that directory; `sed -i.orig` fails with Permission denied exactly as
+# patch-drop-opcache.sh's `awk > .new` did. See patch-vm-interrupt.sh for the model.
 set -euo pipefail
 
 CHECKOUT="${1:?usage: patch-drop-lexbor-html.sh <php-wasm-checkout> [--verify]}"
