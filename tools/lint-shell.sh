@@ -6,6 +6,52 @@ cd "$ROOT"
 
 failed=0
 count=0
+
+# Explicit paths win over the sweep. The pre-commit hook passes the STAGED files, so a commit
+# checks what it is committing; CI passes nothing and gets the whole repository, including the
+# presence and pin checks that only make sense repo-wide.
+if [ "$#" -gt 0 ]; then
+	for path in "$@"; do
+		[ -f "$path" ] || continue
+		case "$path" in
+			*.sh)
+				count=$((count + 1))
+				if bash -n "$path" 2> /tmp/lint-shell.err; then
+					echo "  ok   $path"
+				else
+					failed=$((failed + 1))
+					echo "  FAIL $path -- $(tr '\n' ' ' < /tmp/lint-shell.err)"
+				fi
+				;;
+			*.rc)
+				count=$((count + 1))
+				if grep -qE '^PHP_VERSION=' "$path"; then
+					echo "  ok   $path (PHP_VERSION pinned)"
+				else
+					failed=$((failed + 1))
+					echo "  FAIL $path -- no PHP_VERSION, so the Makefile default decides the interpreter"
+				fi
+				;;
+			*.c)
+				count=$((count + 1))
+				if [ -s "$path" ]; then
+					echo "  ok   $path (present, non-empty)"
+				else
+					failed=$((failed + 1))
+					echo "  FAIL $path -- missing or empty"
+				fi
+				;;
+		esac
+	done
+	rm -f /tmp/lint-shell.err
+	if [ "$count" = 0 ]; then
+		echo "nothing to check"
+		exit 0
+	fi
+	printf '\n%d file%s checked, %d failed\n' "$count" "$([ "$count" = 1 ] || echo s)" "$failed"
+	[ "$failed" = 0 ] || exit 1
+	exit 0
+fi
 while IFS= read -r script; do
 	count=$((count + 1))
 	if bash -n "$script" 2> /tmp/lint-shell.err; then

@@ -26,8 +26,13 @@
 		"*.{md,json,yml}": "prettier --write",
 		"*.sh": [
 			"prettier --write",
-			"bash -n"
+			"bash tools/lint-shell.sh",
+			"shellcheck"
 		],
-		"*.{c,h,cpp,hpp,cc}": "clang-format --style=file -i"
+		"*.{c,h,cpp,hpp,cc}": [
+			"clang-format --style=file -i",
+			"bash tools/lint-shell.sh"
+		],
+		"*.rc": "bash tools/lint-shell.sh"
 	}
 }
