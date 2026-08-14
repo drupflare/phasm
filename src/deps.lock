@@ -1,0 +1,39 @@
+# Every fact that decides the bytes of a built dependency: the source, the ref, and the configure
+# line. Sourced by src/fetch-deps.sh, and hashed on its own into the CI cache key.
+#
+# SEPARATE FROM fetch-deps.sh ON PURPOSE. The cache key has to change when a dependency changes and
+# stay put when the script's logic changes. Hashing the script conflates the two: three fixes to
+# fetch-deps.sh -- the builder invocation, zlib's --static, and copying the extensions inside the
+# container -- moved no dependency at all, and every one of them would have invalidated the cache.
+#
+# Edit a value here and the next CI run rebuilds that library. Edit fetch-deps.sh and it does not.
+
+DEP_PREFIX=/src/lib/
+DEP_CONFIG_CACHE=/tmp/config-cache
+
+LIBXML2_REPO=https://gitlab.gnome.org/GNOME/libxml2.git
+LIBXML2_REF=v2.9.10
+LIBXML2_CONFIGURE="--with-http=no --with-ftp=no --with-python=no --with-threads=no"
+
+LIBYAML_REPO=https://github.com/yaml/libyaml.git
+LIBYAML_REF=0.2.5
+LIBYAML_CONFIGURE="--enable-shared=no --enable-static=yes"
+
+# --static is required rather than optional: without it zlib builds libz.so and links two test
+# programs against it, and wasm-ld rejects a .so with "unknown file type"
+ZLIB_REPO=https://github.com/madler/zlib.git
+ZLIB_REF=v1.3.1
+ZLIB_CONFIGURE="--static"
+
+# iconv is fetched only for the iconv variant; measured, it lands 386,808 bytes over the free
+# ceiling and does not fix mb_substr()
+LIBICONV_VERSION=1.17
+LIBICONV_URL=https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz
+LIBICONV_CONFIGURE="--enable-shared=no --enable-static=yes"
+
+# PHP extensions, copied into php-src/ext/ rather than linked as libraries
+VRZNO_REPO=https://github.com/seanmorris/vrzno.git
+VRZNO_REF=c3aa3b9
+
+YAML_EXT_VERSION=2.3.0
+YAML_EXT_URL=https://pecl.php.net/get/yaml-2.3.0.tgz
