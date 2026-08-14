@@ -13,6 +13,8 @@ MODE="${2:-apply}"
 
 CFLAGS_ADD="--with-pic CFLAGS='-fPIC -flto -O\${SUB_OPTIMIZE}'"
 CACHE_NEW="--cache-file=/tmp/config-cache-iconv-pic"
+# passed to `make`, not to configure: a command-line assignment wins over the makefile's own
+MAKE_ADD="CFLAGS='-fPIC -flto -O\${SUB_OPTIMIZE}' CPPFLAGS='-fPIC'"
 
 fail() {
 	echo "FAIL: $*" >&2
@@ -45,10 +47,18 @@ targets() {
 	} | sort -u
 }
 
+# BOTH edits, because a half-applied patch reporting success is how four runs were spent. A file
+# counts as patched only when the configure line carries --with-pic AND the make line carries CFLAGS.
 unpatched() {
 	found="$(targets)"
-	[ -z "$found" ] || printf '%s\n' "$found" \
-		| xargs -r grep -LE "DOCKER_RUN_IN_ICONV.*--with-pic" | sort -u
+	[ -n "$found" ] || return 0
+	printf '%s\n' "$found" | while IFS= read -r f; do
+		[ -n "$f" ] || continue
+		if ! grep -qE "DOCKER_RUN_IN_ICONV.*--with-pic" "$f" \
+			|| ! grep -qE "DOCKER_RUN_IN_ICONV.*emmake make -j.*CFLAGS=" "$f"; then
+			echo "$f"
+		fi
+	done | sort -u
 }
 
 # printed on every run, because the failure mode of this patch is editing the wrong copy and
@@ -86,21 +96,34 @@ describe "$found"
 count=0
 while IFS= read -r mak; do
 	[ -n "$mak" ] || continue
-	if grep -qE "DOCKER_RUN_IN_ICONV.*--with-pic" "$mak"; then
+	if grep -qE "DOCKER_RUN_IN_ICONV.*--with-pic" "$mak" \
+		&& grep -qE "DOCKER_RUN_IN_ICONV.*emmake make -j.*CFLAGS=" "$mak"; then
 		echo "note  already patched, skipping: $mak"
 		continue
 	fi
-	NEW="$(awk -v add="$CFLAGS_ADD" -v cache="$CACHE_NEW" '
+	NEW="$(awk -v add="$CFLAGS_ADD" -v cache="$CACHE_NEW" -v mk="$MAKE_ADD" '
 		/DOCKER_RUN_IN_ICONV.*emconfigure \.\/configure/ {
 			sub(/--cache-file=[^ ]*/, cache)
 			print $0 " " add
+			next
+		}
+		# THE LEVER THAT ACTUALLY BINDS. A command-line variable assignment to make overrides any
+		# assignment inside the makefile, unconditionally -- so `make CFLAGS=...` beats whatever
+		# configure decided. The patched line is verifiably the one the Makefile includes (md5 changes, and
+		# node_modules/php-wasm-iconv is a symlink to packages/iconv in CI as well as locally), yet
+		# libiconv recurses into SUB-configures that drop the added arguments and then read the
+		# shared /tmp/config-cache, where the PIC answer arrives as "(cached)".
+		/DOCKER_RUN_IN_ICONV.*emmake make -j/ {
+			print $0 " " mk
 			next
 		}
 		{ print }
 	' "$mak")" || fail "the awk edit failed on $mak"
 	[ -n "$NEW" ] || fail "the awk edit produced nothing for $mak"
 	printf '%s\n' "$NEW" > "$mak"
-	grep -qE "DOCKER_RUN_IN_ICONV.*--with-pic" "$mak" || fail "the edit did not take in $mak"
+	grep -qE "DOCKER_RUN_IN_ICONV.*--with-pic" "$mak" || fail "the configure edit did not take in $mak"
+	grep -qE "DOCKER_RUN_IN_ICONV.*emmake make -j.*CFLAGS=" "$mak" \
+		|| fail "the make-line CFLAGS override did not take in $mak"
 	echo "patched $mak"
 	count=$((count + 1))
 done << EOF
