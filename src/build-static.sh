@@ -26,6 +26,15 @@ MAKE_BIN="$(command -v gmake || echo /opt/homebrew/opt/make/libexec/gnubin/make)
 
 cd "$SRC"
 
+# php-src is created BY the builder container, so its tree is not writable by the host user and a
+# host-side `perl -i` fails with "Cannot make temp name: Permission denied"
+in_builder() {
+	docker compose -p phpwasm run -T --rm \
+		-e PKG_CONFIG_PATH=/src/lib/lib/pkgconfig \
+		-e OUTER_UID="$(id -u)" \
+		-w /src emscripten-builder bash -lc "$*"
+}
+
 # Two local patches are required and are applied to a copy of the Makefile:
 #
 # 1. PHP_CONFIGURE_DEPS is empty when every extension is static, so
@@ -69,13 +78,32 @@ cd "$SRC"
 # "line 102036: syntax error: unexpected end of file". Idempotency is therefore
 # keyed on the patched shape, not on a marker string.
 OPCACHE_M4=third_party/php${PHP_VERSION:-8.3}-src/ext/opcache/config.m4
+CONFIG_CACHE=.cache/config-cache
 PATCHED_OPCACHE=0
-if [ -f "$OPCACHE_M4" ] && ! grep -q 'have_shm_mmap_anon=yes\],\[have_shm_mmap_anon=yes\]' "$OPCACHE_M4"; then
+if [ -f "$OPCACHE_M4" ] && grep -q 'php_cv_shm_mmap_anon' "$OPCACHE_M4"; then
+	if grep -q 'php_cv_shm_mmap_anon=no' "$OPCACHE_M4"; then
+		PATCHED_OPCACHE=1
+		# both the FAILURE argument (the branch a --host-less emconfigure lands on) and the
+		# cross argument's non-linux case
+		in_builder "perl -pi -e 's/php_cv_shm_mmap_anon=no/php_cv_shm_mmap_anon=yes/g' '$OPCACHE_M4'"
+		if grep -q 'php_cv_shm_mmap_anon=no' "$OPCACHE_M4"; then
+			echo "opcache config.m4 patch did not apply; the shape it targets has changed" >&2
+			grep -n 'php_cv_shm_mmap_anon' "$OPCACHE_M4" >&2 || true
+			exit 1
+		fi
+		echo "patched opcache config.m4 (forced php_cv_shm_mmap_anon = yes, 8.4+ shape)"
+	fi
+	if [ -f "$CONFIG_CACHE" ] && grep -q 'php_cv_shm_mmap_anon=no' "$CONFIG_CACHE"; then
+		perl -ni -e 'print unless /php_cv_shm_mmap_anon=/' "$CONFIG_CACHE"
+		PATCHED_OPCACHE=1
+		echo "dropped a cached php_cv_shm_mmap_anon=no from $CONFIG_CACHE"
+	fi
+elif [ -f "$OPCACHE_M4" ] && ! grep -q 'have_shm_mmap_anon=yes\],\[have_shm_mmap_anon=yes\]' "$OPCACHE_M4"; then
 	PATCHED_OPCACHE=1
-	perl -0pi -e 's/\[have_shm_mmap_anon=yes\],\[have_shm_mmap_anon=no\],\[\n.*?\n\]\)/[have_shm_mmap_anon=yes],[have_shm_mmap_anon=no],[have_shm_mmap_anon=yes dnl phpwasm-forced\n])/s' "$OPCACHE_M4"
-	perl -0pi -e 's/\[have_shm_mmap_posix=yes\],\[have_shm_mmap_posix=no\],\[have_shm_mmap_posix=no\]/[have_shm_mmap_posix=yes],[have_shm_mmap_posix=no],[have_shm_mmap_posix=yes]/' "$OPCACHE_M4"
+	in_builder "perl -0pi -e 's/\[have_shm_mmap_anon=yes\],\[have_shm_mmap_anon=no\],\[\n.*?\n\]\)/[have_shm_mmap_anon=yes],[have_shm_mmap_anon=no],[have_shm_mmap_anon=yes dnl phpwasm-forced\n])/s' '$OPCACHE_M4'"
+	in_builder "perl -0pi -e 's/\[have_shm_mmap_posix=yes\],\[have_shm_mmap_posix=no\],\[have_shm_mmap_posix=no\]/[have_shm_mmap_posix=yes],[have_shm_mmap_posix=no],[have_shm_mmap_posix=yes]/' '$OPCACHE_M4'"
 	# the branch autoconf actually takes when cross_compiling is "no"
-	perl -0pi -e 's/\[have_shm_mmap_anon=no\]/[have_shm_mmap_anon=yes]/' "$OPCACHE_M4"
+	in_builder "perl -0pi -e 's/\[have_shm_mmap_anon=no\]/[have_shm_mmap_anon=yes]/' '$OPCACHE_M4'"
 	# fatal, not a warning: an unapplied patch surfaces ~8 minutes later as
 	# "No supported shared memory caching support" out of configure, which reads as a
 	# toolchain problem rather than as this substitution missing
