@@ -81,8 +81,10 @@ jobs:
           find src tools -name '*.sh' -print0 | xargs -0 shellcheck
       - name: Check C Formatting
         run: |
-          pip install clang-tools
-          clang-tools --install 21 --tool clang-format
+          pip install 'clang-tools>=1.2.0'
+          clang-tools install --version 21 clang-format --no-progress-bar
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
           clang-format --version
           bun run lint:c
       - name: Reject Committed Artifacts
