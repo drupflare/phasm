@@ -1,0 +1,365 @@
+name: Build Variant
+
+on:
+  push:
+    branches: [master, ver/*, feat/*]
+  pull_request:
+    branches: [master, ver/*, feat/*]
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: 'Which src/rc/<variant>.rc to build, or all of them'
+        type: choice
+        required: true
+        default: all
+        options:
+          - all
+          - control
+          - iconv
+          - mbstring
+          - nolto
+          - vmswitch
+          - jspi
+          - jspimb
+          - jspisjlj
+          - jspimbsjlj
+      php_wasm_ref:
+        description: 'seanmorris/php-wasm git ref (tag, branch or SHA). Recorded in the release notes'
+        type: string
+        required: true
+        default: master
+      patch_vm_interrupt:
+        description: 'Apply patch-vm-interrupt.sh (needed for slice exports)'
+        type: boolean
+        default: false
+      release_tag:
+        description: 'Release tag to create. Empty derives snapshot-<short sha>'
+        type: string
+        required: false
+      prerelease:
+        description: 'Mark the release as a prerelease'
+        type: boolean
+        default: true
+      publish:
+        description: 'Attach the artifacts to a Release. Off archives them only'
+        type: boolean
+        default: true
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.variant }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  PHP_WASM_DIR: /tmp/phpwasm-build/php-wasm
+  PHP_WASM_REF: ${{ inputs.php_wasm_ref || 'master' }}
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 'latest'
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+      - name: Parse Every Script
+        run: bash tools/lint-shell.sh
+      - name: Run ShellCheck
+        run: |
+          if ! command -v shellcheck > /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y shellcheck
+          fi
+          shellcheck --version
+          find src tools -name '*.sh' -print0 | xargs -0 shellcheck
+      - name: Check C Formatting
+        run: |
+          pip install clang-tools
+          clang-tools --install 21 --tool clang-format
+          clang-format --version
+          bun run lint:c
+      - name: Reject Committed Artifacts
+        run: |
+          found="$(git ls-files '*.wasm' '*.o' '*.a')"
+          if [ -n "$found" ]; then
+            echo "build artifacts are tracked in git; they belong in a Release:"
+            echo "$found"
+            exit 1
+          fi
+          echo "no tracked build artifacts"
+      - name: Run Markdownlint
+        run: bun run lint:md
+
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: lint
+
+    permissions:
+      contents: read
+
+    outputs:
+      variants: ${{ steps.pick.outputs.variants }}
+      release_tag: ${{ steps.pick.outputs.release_tag }}
+
+    steps:
+      - uses: actions/checkout@v7
+      - name: Pick the Variants and the Tag
+        id: pick
+        run: |
+          if [ '${{ github.event_name }}' = 'workflow_dispatch' ] && [ '${{ inputs.variant }}' != 'all' ]; then
+            variants="$(printf '%s' '${{ inputs.variant }}' | jq -R . | jq -cs .)"
+          else
+            variants="$(find src/rc -name '*.rc' -exec basename {} .rc ';' | sort | jq -R . | jq -cs .)"
+          fi
+          echo "variants=$variants"
+          echo "variants=$variants" >> "$GITHUB_OUTPUT"
+
+          tag='${{ inputs.release_tag }}'
+          if [ -z "$tag" ]; then
+            tag="snapshot-$(echo '${{ github.sha }}' | cut -c1-7)"
+          fi
+          echo "release_tag=$tag"
+          echo "release_tag=$tag" >> "$GITHUB_OUTPUT"
+
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    needs: plan
+
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: ${{ fromJSON(needs.plan.outputs.variants) }}
+
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check the RC Exists
+        run: |
+          RC="src/rc/${{ matrix.variant }}.rc"
+          test -f "$RC" || { echo "no rc file at $RC"; exit 1; }
+          echo "RC=$RC" >> "$GITHUB_ENV"
+          echo "PHP_VERSION=$(grep -m1 '^PHP_VERSION=' "$RC" | cut -d= -f2)" >> "$GITHUB_ENV"
+
+      - name: Ensure GNU make 4.4 or Newer
+        run: |
+          have=$(make --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
+          echo "make on the runner: $have"
+          if [ "$(printf '%s\n4.4\n' "$have" | sort -V | head -1)" = "4.4" ]; then
+            echo "make is new enough"
+            exit 0
+          fi
+          echo "building GNU make 4.4.1 from source"
+          curl -fsSL --retry 3 https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz -o /tmp/make.tar.gz
+          mkdir -p /tmp/make-src && tar -xzf /tmp/make.tar.gz --strip-components=1 -C /tmp/make-src
+          cd /tmp/make-src && ./configure --prefix=/usr/local > /dev/null && make -j"$(nproc)" > /dev/null
+          sudo make install
+          hash -r
+          make --version | head -1
+
+      - name: Pin the Builder Image by Digest
+        run: |
+          bash src/pin-builder-image.sh
+          echo "BUILDER_IMAGE_PINNED=$(bash src/pin-builder-image.sh --print)" >> "$GITHUB_ENV"
+
+      - name: Clone php-wasm at the Requested Ref
+        run: |
+          mkdir -p "$(dirname "$PHP_WASM_DIR")"
+          git clone https://github.com/seanmorris/php-wasm "$PHP_WASM_DIR"
+          cd "$PHP_WASM_DIR"
+          git checkout --detach "$PHP_WASM_REF"
+          echo "PHP_WASM_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Stage the RC
+        run: |
+          cp "$RC" "$PHP_WASM_DIR/.php-wasm-rc"
+
+      - name: Fetch and Patch the PHP Sources
+        run: |
+          cd "$PHP_WASM_DIR"
+          make "third_party/php${PHP_VERSION}-src/patched" \
+            PHP_BUILDER_DIR="$PHP_WASM_DIR" \
+            IS_TTY=0 \
+            ENV_DIR="$PHP_WASM_DIR/" \
+            ENV_FILE="$PHP_WASM_DIR/.php-wasm-rc"
+          test -f "third_party/php${PHP_VERSION}-src/Zend/zend_execute.c"
+
+      - name: Apply the VM Interrupt Patch
+        if: ${{ inputs.patch_vm_interrupt }}
+        run: PHP_VERSION="$PHP_VERSION" bash src/patch-vm-interrupt.sh "$PHP_WASM_DIR"
+
+      - name: Verify the VM Interrupt Patch Applied
+        if: ${{ inputs.patch_vm_interrupt }}
+        run: PHP_VERSION="$PHP_VERSION" bash src/patch-vm-interrupt.sh "$PHP_WASM_DIR" --verify
+
+      - name: Verify the Tree Is NOT Patched When It Should Not Be
+        if: ${{ !inputs.patch_vm_interrupt }}
+        run: |
+          if PHP_VERSION="$PHP_VERSION" bash src/patch-vm-interrupt.sh "$PHP_WASM_DIR" --verify; then
+            echo "::error::the tree is patched but this variant asked for an unpatched control" >&2
+            exit 1
+          fi
+          echo "confirmed unpatched, which is what this variant asked for"
+
+      - name: Fetch the Libraries php-wasm Does Not
+        run: |
+          ICONV=""
+          if grep -qE '^[[:space:]]*WITH_ICONV=[^0]' "$RC" || grep -q -- '--with-iconv' "$RC"; then
+            ICONV="--with-iconv"
+          fi
+          bash src/fetch-deps.sh "$PHP_WASM_DIR" $ICONV
+
+      - name: Build the Variant
+        run: |
+          if grep -q 'SUPPORT_LONGJMP=wasm' "$RC"; then
+            export MAKE_EXTRA='EXTRA_CFLAGS=-sSUPPORT_LONGJMP=wasm'
+            echo "MAKE_EXTRA=$MAKE_EXTRA"
+          fi
+          JOBS="$(nproc)" bash src/build-variant.sh "${{ matrix.variant }}" "$PHP_WASM_DIR"
+
+      - name: Inspect and Assert the Artifact
+        run: |
+          OUT="vendor/static-${{ matrix.variant }}"
+          ARGS="--expect-static"
+          ARGS="$ARGS --expect-rc=$RC"
+          if grep -q 'JSPI=1' "$RC"; then
+            ARGS="$ARGS --expect-jspi"
+          fi
+          if [ "${{ inputs.patch_vm_interrupt }}" = 'true' ]; then
+            ARGS="$ARGS --expect-slice"
+          fi
+          echo "asserting: $ARGS"
+          bash src/inspect-build.sh "$OUT" $ARGS | tee /tmp/inspect.txt
+
+      - name: Record the Toolchain
+        run: |
+          emcc_version="$(docker run --rm "$BUILDER_IMAGE_PINNED" emcc --version 2>/dev/null | head -1)"
+          {
+            echo "emcc: ${emcc_version:-unavailable}"
+            echo "builder image: $BUILDER_IMAGE_PINNED"
+          } > /tmp/toolchain.txt
+          cat /tmp/toolchain.txt
+
+      - name: Stage the Assets Under Variant-Qualified Names
+        run: |
+          mkdir -p dist
+          for f in "vendor/static-${{ matrix.variant }}"/*.wasm "vendor/static-${{ matrix.variant }}"/*.mjs; do
+            [ -f "$f" ] || continue
+            cp "$f" "dist/phasm-${{ matrix.variant }}-$(basename "$f")"
+          done
+          ls -l dist
+
+      - name: Compose the Release Notes Fragment
+        run: |
+          mkdir -p notes
+          {
+            echo "### \`${{ matrix.variant }}\`"
+            echo
+            echo '| input | value |'
+            echo '| --- | --- |'
+            echo "| variant | \`${{ matrix.variant }}\` |"
+            echo "| php-wasm ref | \`$PHP_WASM_REF\` |"
+            echo "| php-wasm commit | \`$PHP_WASM_SHA\` |"
+            echo "| rc sha256 | \`$(sha256sum "$RC" | cut -d' ' -f1)\` |"
+            echo "| builder image | \`$BUILDER_IMAGE_PINNED\` |"
+            echo "| vm interrupt patch | ${{ inputs.patch_vm_interrupt || false }} |"
+            echo "| this repo | \`${{ github.sha }}\` |"
+            echo
+            echo '```txt'
+            cat /tmp/toolchain.txt
+            cat /tmp/inspect.txt
+            echo '```'
+            echo
+          } > "notes/${{ matrix.variant }}.md"
+          cat "notes/${{ matrix.variant }}.md"
+
+      - name: Archive the Artifact
+        id: archive
+        uses: actions/upload-artifact@v7
+        with:
+          name: phasm-${{ matrix.variant }}-${{ github.sha }}
+          path: |
+            dist/*
+            notes/*
+          overwrite: true
+          if-no-files-found: error
+
+      - name: Attest Build Artifacts
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-name: phasm-${{ matrix.variant }}-${{ github.sha }}
+          subject-digest: sha256:${{ steps.archive.outputs.artifact-digest }}
+
+      - name: Archive the Build Log on Failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: phasm-${{ matrix.variant }}-${{ github.sha }}-logs
+          path: |
+            /tmp/inspect.txt
+            /tmp/toolchain.txt
+            ${{ env.PHP_WASM_DIR }}/config.log
+          retention-days: 14
+          if-no-files-found: ignore
+
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: [plan, build]
+    if: ${{ github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || inputs.publish) }}
+
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download Every Variant
+        uses: actions/download-artifact@v8
+        with:
+          pattern: phasm-*-${{ github.sha }}
+          path: staged
+          merge-multiple: true
+
+      - name: Assemble the Release Body
+        run: |
+          {
+            if [ '${{ github.event_name }}' = 'workflow_dispatch' ]; then
+              echo "Built by \`.github/workflows/build.yml\` on request."
+            else
+              echo "Snapshot of \`${{ github.sha }}\` on \`${{ github.ref_name }}\`, built by"
+              echo "\`.github/workflows/build.yml\`. A snapshot is a prerelease and is never promoted;"
+              echo "\`release.yml\` cuts the named releases."
+            fi
+            echo
+            for f in staged/notes/*.md; do
+              [ -f "$f" ] || continue
+              cat "$f"
+            done
+          } > /tmp/body.md
+          cat /tmp/body.md
+          ls -l staged/dist
+
+      - name: Create the Prerelease
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.plan.outputs.release_tag }}
+          name: phasm ${{ needs.plan.outputs.release_tag }}
+          body_path: /tmp/body.md
+          draft: false
+          prerelease: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
+          files: staged/dist/*
