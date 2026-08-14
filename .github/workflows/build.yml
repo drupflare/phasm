@@ -165,7 +165,22 @@ jobs:
             exit 0
           fi
           echo "building GNU make 4.4.1 from source"
-          curl -fsSL --retry 3 https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz -o /tmp/make.tar.gz
+          MAKE_SHA256=dd16fb1d67bfab79a72f5e8390735c49e3e8e70b4945a15ab1f81ddb78658fb3
+          for url in \
+            https://ftpmirror.gnu.org/gnu/make/make-4.4.1.tar.gz \
+            https://mirrors.kernel.org/gnu/make/make-4.4.1.tar.gz \
+            https://ftp.gnu.org/gnu/make/make-4.4.1.tar.gz; do
+            echo "trying $url"
+            if curl -fsSL --connect-timeout 15 --max-time 300 --retry 2 --retry-connrefused \
+              "$url" -o /tmp/make.tar.gz; then
+              if echo "$MAKE_SHA256  /tmp/make.tar.gz" | sha256sum -c -; then
+                break
+              fi
+              echo "::warning::$url served an unexpected checksum; trying the next mirror" >&2
+            fi
+            rm -f /tmp/make.tar.gz
+          done
+          test -f /tmp/make.tar.gz || { echo "::error::every make 4.4.1 mirror failed" >&2; exit 1; }
           mkdir -p /tmp/make-src && tar -xzf /tmp/make.tar.gz --strip-components=1 -C /tmp/make-src
           cd /tmp/make-src && ./configure --prefix=/usr/local > /dev/null && make -j"$(nproc)" > /dev/null
           sudo make install
