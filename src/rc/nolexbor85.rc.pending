@@ -1,3 +1,8 @@
+# .rc.pending, NOT .rc, so `find src/rc -name '*.rc'` does not put it in the matrix.
+# It was added to the matrix once and failed the build immediately, which is the
+# patch script refusing correctly rather than a defect. Rename it back to .rc only
+# after the ext/dom source patch exists.
+#
 # min85.rc plus the lexbor surgery: everything substitutable dropped AND lexbor's
 # HTML half removed from the source tree by src/patch-drop-lexbor-html.sh.
 #

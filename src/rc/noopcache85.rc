@@ -1,0 +1,62 @@
+# min85.rc plus ext/opcache dropped, which is the largest UNCOUNTED term on the
+# 8.5 line and 100% delta: no binary in vendor/ has ever contained opcache, so
+# ZendAccelerator plus the ~20 SSA translation units under Optimizer/ are new mass
+# rather than a difference.
+#
+# 8.5 removed the --enable-opcache/--disable-opcache flags, so this needs a source
+# patch; src/patch-drop-opcache.sh comments out the unconditional
+# PHP_NEW_EXTENSION(opcache) and DROP_OPCACHE=1 below is what build.yml reads.
+#
+# No symbol stub is needed on this build, measured rather than assumed:
+# zend_accel_schedule_restart_hook is DEFINED by Zend at zend.c:97 as NULL, and
+# zend_accel_globals appears once, at main.c:2818, as sizeof() on a type inside an
+# `#ifdef ZTS` block that this NTS build compiles out. The patch refuses on a ZTS
+# tree for exactly that reason.
+DROP_OPCACHE=1
+PHP_VERSION=8.5
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=0
+WITH_XML=0
+WITH_YAML=0
+WITH_ZLIB=0
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_ICONV=0
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+# opcache is compiled in; file_cache_only is set at runtime from the worker ini
+CONFIGURE_FLAGS+= --enable-opcache
