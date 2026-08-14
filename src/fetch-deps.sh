@@ -42,10 +42,12 @@ PHP_VERSION="${PHP_VERSION:-8.3}"
 THIRD="$CHECKOUT/third_party"
 mkdir -p "$THIRD"
 
-# the prefix every recovered configure line used; php-src's configure looks here for the .a files
-PREFIX=/src/lib/
-# a shared cache-file was in every recovered invocation; it is what makes a second configure cheap
-CACHE=/tmp/config-cache
+# every source, ref and configure line lives in deps.lock so the CI cache key can hash the
+# dependency facts without hashing this script's logic
+# shellcheck source=src/deps.lock
+. "$(dirname "$0")/deps.lock"
+PREFIX="$DEP_PREFIX"
+CACHE="$DEP_CONFIG_CACHE"
 
 # Runs a command inside the emscripten builder, which is what makes the output wasm rather than
 # native.
@@ -69,14 +71,13 @@ if have_lib libxml2.a; then
 	echo "libxml2: already built"
 else
 	echo "libxml2: fetching v2.9.10"
-	[ -d "$THIRD/libxml2" ] || git clone --depth 1 --branch v2.9.10 \
-		https://gitlab.gnome.org/GNOME/libxml2.git "$THIRD/libxml2"
+	[ -d "$THIRD/libxml2" ] || git clone --depth 1 --branch "$LIBXML2_REF" \
+		"$LIBXML2_REPO" "$THIRD/libxml2"
 	# autogen.sh rather than configure: the git checkout ships no configure script, only the
 	# autotools inputs. A release TARBALL would have one; the tag does not.
 	in_builder /src/third_party/libxml2 "
 		[ -f configure ] || ./autogen.sh --help > /dev/null 2>&1 || autoreconf -fi
-		emconfigure ./configure --with-http=no --with-ftp=no --with-python=no \
-			--with-threads=no --prefix=$PREFIX --cache-file=$CACHE
+		emconfigure ./configure $LIBXML2_CONFIGURE --prefix=$PREFIX --cache-file=$CACHE
 		emmake make -j\"\$(nproc)\" && emmake make install
 	"
 fi
@@ -86,12 +87,11 @@ if have_lib libyaml.a; then
 	echo "libyaml: already built"
 else
 	echo "libyaml: fetching 0.2.5"
-	[ -d "$THIRD/libyaml" ] || git clone --depth 1 --branch 0.2.5 \
-		https://github.com/yaml/libyaml.git "$THIRD/libyaml"
+	[ -d "$THIRD/libyaml" ] || git clone --depth 1 --branch "$LIBYAML_REF" \
+		"$LIBYAML_REPO" "$THIRD/libyaml"
 	in_builder /src/third_party/libyaml "
 		[ -f configure ] || ./bootstrap
-		emconfigure ./configure --prefix=$PREFIX --enable-shared=no --enable-static=yes \
-			--cache-file=$CACHE
+		emconfigure ./configure $LIBYAML_CONFIGURE --prefix=$PREFIX --cache-file=$CACHE
 		emmake make -j\"\$(nproc)\" && emmake make install
 	"
 fi
@@ -101,13 +101,13 @@ if have_lib libz.a; then
 	echo "zlib: already built"
 else
 	echo "zlib: fetching v1.3.1"
-	[ -d "$THIRD/zlib" ] || git clone --depth 1 --branch v1.3.1 \
-		https://github.com/madler/zlib.git "$THIRD/zlib"
+	[ -d "$THIRD/zlib" ] || git clone --depth 1 --branch "$ZLIB_REF" \
+		"$ZLIB_REPO" "$THIRD/zlib"
 	# --static is required, not optional: without it zlib builds libz.so AND links two test
 	# programs against it, and wasm-ld rejects a .so with "unknown file type". The warm tree's
 	# configure.log records `./configure --prefix=/src/lib/ --static`.
 	in_builder /src/third_party/zlib "
-		emconfigure ./configure --prefix=$PREFIX --static
+		emconfigure ./configure $ZLIB_CONFIGURE --prefix=$PREFIX
 		emmake make -j\"\$(nproc)\" && emmake make install
 	"
 fi
@@ -149,8 +149,8 @@ if [ -d "$SRC/ext/vrzno" ]; then
 	echo "vrzno: already in ext/"
 else
 	echo "vrzno: fetching c3aa3b9"
-	[ -d "$THIRD/vrzno" ] || git clone https://github.com/seanmorris/vrzno.git "$THIRD/vrzno"
-	git -C "$THIRD/vrzno" checkout --quiet c3aa3b9
+	[ -d "$THIRD/vrzno" ] || git clone "$VRZNO_REPO" "$THIRD/vrzno"
+	git -C "$THIRD/vrzno" checkout --quiet "$VRZNO_REF"
 	# copied INSIDE the builder: php-src is created by the container, so its ext/ is not
 	# writable by the host user and a host-side cp fails with "Permission denied"
 	in_builder /src/third_party "cp -R vrzno php${PHP_VERSION}-src/ext/vrzno"
