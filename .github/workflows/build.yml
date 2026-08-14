@@ -100,6 +100,12 @@ jobs:
             exit 1
           fi
           echo "no tracked build artifacts"
+      - name: Evaluate Every RC Against php-wasm's Guards
+        run: |
+          git clone --depth 1 https://github.com/seanmorris/php-wasm /tmp/rc-lint-php-wasm
+          cd /tmp/rc-lint-php-wasm && npm install --no-audit --no-fund > /dev/null
+          cd "$GITHUB_WORKSPACE" && bash tools/lint-rc.sh /tmp/rc-lint-php-wasm
+
       - name: Run Markdownlint
         run: bun run lint:md
 

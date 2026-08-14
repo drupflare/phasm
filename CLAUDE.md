@@ -114,6 +114,14 @@ Every one of these has already been paid for once.
   directly at lines 285-301, which is exactly the split observed in the artifacts. **CI must run
   `npm install` in the php-wasm checkout before building**; it did not, and eleven variants per run
   were published missing seven extensions each, `ext-dom` among them.
+- **`WITH_SESSION=0` does not link**: `undefined symbol: ps_globals`, ext/session's globals struct,
+  is referenced unconditionally. Core's `composer.json` requires `ext-session` anyway, so a variant
+  without it could never ship even if it linked. Same for `filter`, `tokenizer` and `ctype`.
+- **Evaluate a new rc with `bun run lint:rc` BEFORE pushing it.** php-wasm's `packages/*/static.mak`
+  carry `$(error ...)` guards for impossible combinations and make fires them at PARSE time, so a
+  dry-run catches them in about a second where CI takes ten minutes to reach the same conclusion. The
+  guard only works against a checkout WITH `node_modules`, because the fragments are included through
+  `$(shell npm ls -p)`; the script says it is skipping rather than passing when either is missing.
 - **vmswitch needs more memory to LINK than the other variants**, and CI gives it 24 GB of swap for
   that reason. SWITCH dispatch regenerates `zend_vm_execute.h` into one enormous `execute_ex()`, and
   full-LTO codegen over a single function that size exhausted the runner: `wasm-ld` took SIGKILL
