@@ -27,8 +27,13 @@ ZLIB_CONFIGURE="--static"
 
 # iconv is fetched only for the iconv variant; measured, it lands 386,808 bytes over the free
 # ceiling and does not fix mb_substr()
+#
+# Tried in order, and the checksum is what makes a mirror safe to fall back to. ftpmirror.gnu.org
+# is absent on purpose: it does not carry libiconv, on either /libiconv or /gnu/libiconv.
 LIBICONV_VERSION=1.17
-LIBICONV_URL=https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz
+LIBICONV_URLS="https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz
+https://mirrors.kernel.org/gnu/libiconv/libiconv-1.17.tar.gz"
+LIBICONV_SHA256=8f74213b56238c85a50a5329f77e06198771e70dd9a739779f4c02f65d971313
 LIBICONV_CONFIGURE="--enable-shared=no --enable-static=yes"
 
 # PHP extensions, copied into php-src/ext/ rather than linked as libraries
@@ -36,4 +41,5 @@ VRZNO_REPO=https://github.com/seanmorris/vrzno.git
 VRZNO_REF=c3aa3b9
 
 YAML_EXT_VERSION=2.3.0
-YAML_EXT_URL=https://pecl.php.net/get/yaml-2.3.0.tgz
+YAML_EXT_URLS="https://pecl.php.net/get/yaml-2.3.0.tgz"
+YAML_EXT_SHA256=bc8404807a3a4dc896b310af21a7f8063aa238424ff77f27eb6ffa88b5874b8a

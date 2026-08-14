@@ -66,6 +66,36 @@ in_builder() {
 
 have_lib() { [ -f "$CHECKOUT/lib/lib/$1" ]; }
 
+# macOS has shasum and no sha256sum; CI is the other way round
+sha256_of() {
+	if command -v sha256sum > /dev/null 2>&1; then
+		sha256sum "$1" | cut -d' ' -f1
+	else
+		shasum -a 256 "$1" | cut -d' ' -f1
+	fi
+}
+
+# Downloads $2 to $3, verifying it against sha256 $1, taking the first source in $2 that serves
+# the expected bytes. A short connect timeout matters: ftp.gnu.org has hung a CI job for nine
+# minutes across four retries before failing.
+fetch_verified() {
+	local want="$1" urls="$2" out="$3" url got
+	for url in $urls; do
+		echo "  trying $url"
+		if curl -fsSL --connect-timeout 15 --max-time 600 --retry 2 --retry-connrefused \
+			"$url" -o "$out"; then
+			got="$(sha256_of "$out")"
+			if [ "$got" = "$want" ]; then
+				return 0
+			fi
+			echo "  $url served $got, wanted $want" >&2
+		fi
+		rm -f "$out"
+	done
+	echo "every source failed for $out" >&2
+	return 1
+}
+
 # --- libxml2, and dom/simplexml/xml all fail without it -----------------------
 if have_lib libxml2.a; then
 	echo "libxml2: already built"
@@ -119,14 +149,14 @@ if [ "$WANT_ICONV" = 1 ]; then
 	if have_lib libiconv.a; then
 		echo "libiconv: already built"
 	else
-		echo "libiconv: fetching 1.17"
-		[ -d "$THIRD/libiconv-1.17" ] || {
-			curl -fsSL https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz \
-				-o /tmp/libiconv-1.17.tar.gz
-			tar -xzf /tmp/libiconv-1.17.tar.gz -C "$THIRD"
+		echo "libiconv: fetching $LIBICONV_VERSION"
+		[ -d "$THIRD/libiconv-$LIBICONV_VERSION" ] || {
+			fetch_verified "$LIBICONV_SHA256" "$LIBICONV_URLS" \
+				"/tmp/libiconv-$LIBICONV_VERSION.tar.gz"
+			tar -xzf "/tmp/libiconv-$LIBICONV_VERSION.tar.gz" -C "$THIRD"
 		}
-		in_builder /src/third_party/libiconv-1.17 "
-			emconfigure ./configure --prefix=$PREFIX --enable-shared=no --enable-static=yes \
+		in_builder "/src/third_party/libiconv-$LIBICONV_VERSION" "
+			emconfigure ./configure $LIBICONV_CONFIGURE --prefix=$PREFIX \
 				--cache-file=$CACHE
 			emmake make -j\"\$(nproc)\" && emmake make install
 		"
@@ -159,11 +189,12 @@ fi
 if [ -d "$SRC/ext/yaml" ]; then
 	echo "yaml: already in ext/"
 else
-	echo "yaml: fetching pecl yaml 2.3.0"
+	echo "yaml: fetching pecl yaml $YAML_EXT_VERSION"
 	[ -d "$THIRD/php${PHP_VERSION}-yaml" ] || {
-		curl -fsSL https://pecl.php.net/get/yaml-2.3.0.tgz -o /tmp/yaml-2.3.0.tgz
+		fetch_verified "$YAML_EXT_SHA256" "$YAML_EXT_URLS" "/tmp/yaml-$YAML_EXT_VERSION.tgz"
 		mkdir -p "$THIRD/php${PHP_VERSION}-yaml"
-		tar -xzf /tmp/yaml-2.3.0.tgz -C "$THIRD/php${PHP_VERSION}-yaml" --strip-components=1
+		tar -xzf "/tmp/yaml-$YAML_EXT_VERSION.tgz" -C "$THIRD/php${PHP_VERSION}-yaml" \
+			--strip-components=1
 	}
 	in_builder /src/third_party "cp -R php${PHP_VERSION}-yaml php${PHP_VERSION}-src/ext/yaml"
 fi
