@@ -114,6 +114,11 @@ Every one of these has already been paid for once.
   directly at lines 285-301, which is exactly the split observed in the artifacts. **CI must run
   `npm install` in the php-wasm checkout before building**; it did not, and eleven variants per run
   were published missing seven extensions each, `ext-dom` among them.
+- **A knowingly-unbuildable variant must be `.rc.pending`, not `.rc`.** `plan` discovers the matrix
+  with `find src/rc -name '*.rc'`, which recurses, so a subdirectory does NOT hide one -- only the
+  extension does. `src/rc/nolexbor85.rc` was added complete-but-unbuildable and failed every push
+  until it was renamed; the patch script refusing was correct behaviour, and putting it in the matrix
+  was the mistake.
 - **Both 8.3 and 8.5 resolve to `ZEND_VM_KIND_CALL` on wasm32, so a version comparison is not
   contaminated by the VM.** `Zend/zend_vm_opcodes.h` tries HYBRID (needs `HAVE_GCC_GLOBAL_REGS`, which
   the wasm probe leaves `#undef`), then TAILCALL (gated on `__x86_64__ || __aarch64__`, and wasm32 is

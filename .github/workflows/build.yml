@@ -19,7 +19,7 @@ on:
           - control85
           - min85
           - trim85
-          - nolexbor85
+          - noopcache85
           - iconv
           - mbstring
           - nolto
@@ -230,6 +230,15 @@ jobs:
             ENV_DIR="$PHP_WASM_DIR/" \
             ENV_FILE="$PHP_WASM_DIR/.php-wasm-rc"
           test -f "third_party/php${PHP_VERSION}-src/Zend/zend_execute.c"
+
+      - name: Drop ext/opcache
+        run: |
+          if grep -qE '^DROP_OPCACHE=1' "$RC"; then
+            PHP_VERSION="$PHP_VERSION" bash src/patch-drop-opcache.sh "$PHP_WASM_DIR"
+            PHP_VERSION="$PHP_VERSION" bash src/patch-drop-opcache.sh "$PHP_WASM_DIR" --verify
+          else
+            echo "rc does not set DROP_OPCACHE, leaving ext/opcache intact"
+          fi
 
       - name: Drop lexbor's HTML Half
         run: |
