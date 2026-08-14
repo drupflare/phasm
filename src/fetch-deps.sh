@@ -48,13 +48,18 @@ PREFIX=/src/lib/
 CACHE=/tmp/config-cache
 
 # Runs a command inside the emscripten builder, which is what makes the output wasm rather than
-# native. INFERRED, not recovered: the config.log records the container's hostname but not the
-# `docker run` that produced it. `docker compose run` matches how the Makefile drives the builder.
+# native.
+PKG_CONFIG_PATH_IN_BUILDER=/src/lib/lib/pkgconfig
 in_builder() {
 	local workdir="$1"
 	shift
-	docker compose -f "$CHECKOUT/docker-compose.yml" run --rm \
-		-w "$workdir" emscripten-builder bash -lc "$*"
+	(
+		cd "$CHECKOUT" || exit 1
+		docker compose -p phpwasm run -T --rm \
+			-e PKG_CONFIG_PATH="$PKG_CONFIG_PATH_IN_BUILDER" \
+			-e OUTER_UID="$(id -u)" \
+			-w "$workdir" emscripten-builder bash -lc "$*"
+	)
 }
 
 have_lib() { [ -f "$CHECKOUT/lib/lib/$1" ]; }
