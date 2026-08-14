@@ -1,0 +1,78 @@
+# control85.rc with ext-pdo dropped, so the pair can be priced against control85
+# in the same run rather than across two builds.
+#
+# THERE IS NO WITH_PDO KNOB. php-wasm hardcodes --enable-pdo into the configure
+# line at Makefile:341, alongside --enable-json and --disable-all, so no variable
+# turns it off. ${CONFIGURE_FLAGS} is interpolated at the END of that same line
+# and ext/pdo/config.m4 declares PHP_ARG_ENABLE([pdo]) with an explicit
+# --disable-pdo help string, so appending the negation is the mechanism: autoconf
+# takes the last assignment to enable_pdo. The rc is included at Makefile:22 and
+# packages/*/static.mak at :244, and packages/sqlite adds its own --enable-pdo for
+# WITH_SQLITE=static/shared/dynamic -- WITH_SQLITE=0 below is what keeps that
+# branch from landing after this line and winning.
+#
+# WHAT MAKES IT SAFE. Nothing opens a PDO connection here: pdo_sqlite is not
+# compiled in, pdo_pglite and pdo_cfd1 are off, and drupflare/rom talks to
+# ctx.storage.sql through a CfwSqlClient. What ext-pdo was still carrying the
+# extension for is CLASS CONSTANTS -- core's FetchModeTrait builds
+# $fetchModeLiterals out of PDO::FETCH_* as property defaults, so the first
+# `new Statement` on a build without the class throws
+# Error("Class \"PDO\" not found"). rom/src/pdo-shim.php declares PDO,
+# PDOException and PDOStatement in userland with those constants read off a real
+# extension, and rom/tests/pdo-shim.php holds the values to it. That shim must be
+# in the deployed tree before this variant ships; this rc exists to price it.
+#
+# THE SIZE IS NOT KNOWN YET. ext/pdo measured 339,704 bytes of BITCODE in the 8.5
+# tree, which is not a gzip figure and must never be subtracted from the
+# 3,145,728 ceiling -- raw and gzipped have already moved in opposite directions
+# here. The gzip delta is whatever inspect-build.sh reports for this variant
+# against control85 in the same run.
+PHP_VERSION=8.5
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=static
+WITH_XML=static
+WITH_YAML=static
+WITH_ZLIB=static
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_ICONV=0
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+# opcache is compiled in; file_cache_only is set at runtime from the worker ini
+CONFIGURE_FLAGS+= --enable-opcache
+# the negation Makefile:341 has no knob for; last --enable/--disable pdo wins
+CONFIGURE_FLAGS+= --disable-pdo

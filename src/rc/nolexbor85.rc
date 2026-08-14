@@ -1,0 +1,69 @@
+# min85.rc plus the lexbor surgery: everything substitutable dropped AND lexbor's
+# HTML half removed from the source tree by src/patch-drop-lexbor-html.sh.
+#
+# NOT BUILDABLE YET, and it is kept because the analysis is worth preserving.
+# Symbol analysis over the built bitcode found the spec wrong twice: lexbor's
+# ENCODING half cannot go (url.o, punycode.o, idna.o and unicode.o need 7 real
+# functions from it, and those need 88 codepage tables from multi/single/range),
+# and the three named ext/dom sources are not sufficient -- 21 symbols stay
+# undefined in php_dom.o's handler tables, element.o's dom_parse_fragment and the
+# css selector entries. So the removable set is html + css + FOUR ext/dom objects,
+# 1,306,444 bytes of BITCODE, and it needs a source patch to php_dom.c, its
+# arginfo header and element.c rather than config.m4 deletions.
+#
+# src/patch-drop-lexbor-html.sh REFUSES by default for that reason. Do not build
+# this variant until the source patch exists; it would fail at the link.
+#
+# Drupal reaches none of it: Html::load() calls DOMDocument::loadHTML(), libxml2's
+# parser, and Drupal 11.4.5 has ZERO Dom\* uses in core. lexbor's url half stays,
+# so ext/uri, FILTER_VALIDATE_URL and the http/ftp wrappers keep working.
+#
+# DROP_LEXBOR_HTML is read by build.yml, not by php-wasm's Makefile.
+DROP_LEXBOR_HTML=1
+PHP_VERSION=8.5
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=0
+WITH_XML=0
+WITH_YAML=0
+WITH_ZLIB=0
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_ICONV=0
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+# opcache is compiled in; file_cache_only is set at runtime from the worker ini
+CONFIGURE_FLAGS+= --enable-opcache
