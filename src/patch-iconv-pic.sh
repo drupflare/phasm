@@ -1,41 +1,6 @@
 #!/usr/bin/env bash
 # Makes libiconv build position-independent, so it can be linked into a wasm SIDE MODULE.
 #
-# THE FAILURE. Every `iconv` build dies at the libiconv.so link with, twenty times over:
-#   libiconv.a(iconv.o): relocation R_WASM_MEMORY_ADDR_SLEB cannot be used against symbol
-#   `.L.str`; recompile with -fPIC
-# wasm-ld stops at 20 and prints "too many errors emitted", which is why the real cause was hidden
-# behind an error limit for several runs.
-#
-# WHY IT IS NOT ALREADY PIC. php-wasm passes the flags through the environment:
-#   DOCKER_RUN_IN_ICONV = ... -e EMCC_CFLAGS='-fPIC -flto -O${SUB_OPTIMIZE}' ...
-# but libiconv compiles through `libtool --mode=compile`, and in CI the flags do not reach the
-# object. The CI log's own compile line is the evidence, `-g -O2 -fvisibility=hidden ... -c ./iconv.c`
-# with neither -fPIC nor -flto, while PHP's own ext/iconv compile in the same log carries both.
-#
-# It builds fine on a local machine, which is what made this look intermittent: a locally produced
-# libiconv.a has all 3 members as LTO BITCODE, and a bitcode member has no relocations to complain
-# about. The archive that fails carries a native non-PIC object instead.
-#
-# THE FIX IS `--with-pic`, and the first attempt used the wrong mechanism. libtool DECIDES whether to
-# emit PIC: for `--enable-shared=no` it builds only non-PIC objects, because a static archive does not
-# need them. So passing `CFLAGS=-fPIC` fights libtool's own logic. `--with-pic` is the standard
-# libtool option that says "PIC even for the static library", and it is the mechanism this needs.
-# `-flto` is kept alongside it because an LTO member is bitcode, which has no relocations to reject
-# at all -- that is why a locally built archive links: all three of its members are bitcode.
-#
-# THE FIRST ATTEMPT ALSO PATCHED A LINE THE BUILD DID NOT USE. Its regex required
-# `--prefix=... .*--enable-static=yes` in that order; CI installs the PUBLISHED php-wasm-iconv, whose
-# configure line orders the flags differently. The patch matched a line, `--verify` passed, and the
-# configure that actually ran was untouched with the old shared cache. So the matcher is now
-# order-independent, it rewrites EVERY libiconv configure invocation it can find, and --verify fails
-# if any unpatched one remains anywhere in the checkout.
-#
-# THIS PATCHES A DEPENDENCY, NOT php-src. The recipe lives in php-wasm's own
-# node_modules/php-wasm-iconv/static.mak, so this is an upstream defect and the patch belongs
-# upstream too; it is applied here to unblock the variant. node_modules is created by `npm install`
-# on the host, so unlike patch-drop-opcache.sh this needs no in-container write.
-#
 # usage:
 #   src/patch-iconv-pic.sh <php-wasm-checkout>
 #   src/patch-iconv-pic.sh <php-wasm-checkout> --verify
@@ -54,20 +19,50 @@ fail() {
 	exit 1
 }
 
-# every file in the checkout that configures libiconv. Order-independent: a line that runs
-# `./configure` in a libiconv directory and asks for a static build, whatever order the flags are in.
-# CI installs the PUBLISHED php-wasm-iconv and the repo carries its own copy under packages/; they do
-# not agree on flag order, which is what defeated the first version of this patch.
-# DOCKER_RUN_IN_ICONV is on the same line and is what makes this libiconv's configure rather than
-# any other package's. A first version matched `emconfigure ./configure .*--enable-static=yes`, which
-# also hit libyaml and mbstring -- two packages that build fine and are not this patch's business.
+# THE MAKEFILE'S OWN CONTRACT IS THE TARGET LIST, and three attempts failed by using something else.
+# php-wasm includes its packages like this, at Makefile:244:
+#   -include $(addsuffix /static.mak,$(filter-out ${TOP_LEVEL},$(shell npm ls -p)))
+# So the authoritative path is `$(npm ls -p)/static.mak`, and anything else is a guess. What failed:
+# release-asset download (the newest release has no assets), a `grep -rl` tree walk (it reported
+# packages/iconv while CI's error names node_modules/php-wasm-iconv, and `grep -r` does not follow a
+# symlinked directory), and an order-dependent regex (the published package orders the flags
+# differently from the repo copy).
+#
+# LOCALLY THE TWO PATHS ARE ONE FILE -- node_modules/php-wasm-iconv is a symlink to ../packages/iconv
+# -- which is why every local validation passed while CI kept failing. That asymmetry is the whole
+# reason this step prints what it resolved.
 LIBICONV_RE='DOCKER_RUN_IN_ICONV.*emconfigure \./configure'
+
 targets() {
-	grep -rlE "$LIBICONV_RE" "$CHECKOUT" --include='*.mak' --include='Makefile' 2> /dev/null | sort -u
+	{
+		# what the Makefile includes, resolved the same way it resolves it
+		(cd "$CHECKOUT" && npm ls -p 2> /dev/null) | while IFS= read -r dir; do
+			[ -n "$dir" ] && [ -f "$dir/static.mak" ] \
+				&& grep -lE "$LIBICONV_RE" "$dir/static.mak" 2> /dev/null
+		done
+		# and anything else with the same shape, symlinks followed, so a second real copy cannot hide
+		find "$CHECKOUT" -name 'static.mak' -exec grep -lE "$LIBICONV_RE" {} + 2> /dev/null
+	} | sort -u
 }
+
 unpatched() {
-	grep -rlE "$LIBICONV_RE" "$CHECKOUT" --include='*.mak' --include='Makefile' 2> /dev/null \
+	found="$(targets)"
+	[ -z "$found" ] || printf '%s\n' "$found" \
 		| xargs -r grep -LE "DOCKER_RUN_IN_ICONV.*--with-pic" | sort -u
+}
+
+# printed on every run, because the failure mode of this patch is editing the wrong copy and
+# reporting success. An operator reading the log must be able to see WHICH file, whether it is a
+# symlink, and what its content hash was before and after
+describe() {
+	printf '%s\n' "$1" | while IFS= read -r f; do
+		[ -n "$f" ] || continue
+		real="$(cd "$(dirname "$f")" && pwd -P)/$(basename "$f")"
+		link=''
+		[ -L "$(dirname "$f")" ] && link=' (parent is a SYMLINK)'
+		printf '      %s\n        -> %s%s  md5=%s\n' "$f" "$real" "$link" \
+			"$(md5sum "$f" 2> /dev/null | cut -c1-12 || md5 -q "$f" 2> /dev/null | cut -c1-12)"
+	done
 }
 
 if [ "$MODE" = '--verify' ]; then
@@ -77,12 +72,16 @@ $left"
 	found="$(targets)"
 	[ -n "$found" ] || fail "no libiconv configure line anywhere under $CHECKOUT; the shape moved"
 	echo "ok: every libiconv configure carries --with-pic"
-	printf '%s\n' "$found" | sed 's/^/     /'
+	echo "    resolved targets:"
+	describe "$found"
 	exit 0
 fi
 
 found="$(targets)"
 [ -n "$found" ] || fail "no libiconv configure line anywhere under $CHECKOUT; the shape moved and this patch would do nothing"
+
+echo "resolved targets BEFORE patching:"
+describe "$found"
 
 count=0
 while IFS= read -r mak; do
@@ -112,4 +111,6 @@ EOF
 left="$(unpatched)"
 [ -z "$left" ] || fail "patched $count file(s) but these remain unpatched:
 $left"
+echo "resolved targets AFTER patching:"
+describe "$found"
 echo "added --with-pic (plus -flto and a private config cache) to $count libiconv configure line(s)"
