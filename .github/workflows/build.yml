@@ -288,6 +288,7 @@ jobs:
 
       - name: Inspect and Assert the Artifact
         run: |
+          set -o pipefail
           OUT="vendor/static-${{ matrix.variant }}"
           ARGS="--expect-static"
           ARGS="$ARGS --expect-rc=$RC"
