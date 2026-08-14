@@ -200,6 +200,12 @@ jobs:
           git checkout --detach "$PHP_WASM_REF"
           echo "PHP_WASM_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
+      - name: Install php-wasm's Node Packages
+        run: |
+          cd "$PHP_WASM_DIR"
+          npm install --no-audit --no-fund
+          echo "packages visible to the Makefile: $(npm ls -p | wc -l)"
+
       - name: Stage the RC
         run: |
           cp "$RC" "$PHP_WASM_DIR/.php-wasm-rc"

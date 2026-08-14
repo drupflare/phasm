@@ -104,6 +104,16 @@ Every one of these has already been paid for once.
   images have shipped 4.3 for several releases, which is why CI builds 4.4.1 from source. It is
   fetched from ftpmirror.gnu.org, then mirrors.kernel.org, then ftp.gnu.org, verified by sha256,
   because ftp.gnu.org alone hung a job for nine minutes across four retries and then failed it.
+- **php-wasm's extension flags come from `packages/*/static.mak`, which are included via
+  `$(shell npm ls -p)` (`Makefile:244`), so a checkout with no `node_modules` silently builds a
+  binary with NO extensions.** `npm ls -p` returns 41 paths in an installed tree and 1 in a bare
+  clone, and `filter-out ${TOP_LEVEL}` strips that one, so zero fragments are included and
+  `CONFIGURE_FLAGS` never gains `--enable-dom`, `--with-libxml`, `--enable-simplexml`,
+  `--enable-xml`, `--with-yaml`, `--with-zlib` or `--enable-vrzno`. The flags that survive
+  (`ctype`, `filter`, `session`, `tokenizer`, `opcache`) are the ones the top-level Makefile adds
+  directly at lines 285-301, which is exactly the split observed in the artifacts. **CI must run
+  `npm install` in the php-wasm checkout before building**; it did not, and eleven variants per run
+  were published missing seven extensions each, `ext-dom` among them.
 - **vmswitch needs more memory to LINK than the other variants**, and CI gives it 24 GB of swap for
   that reason. SWITCH dispatch regenerates `zend_vm_execute.h` into one enormous `execute_ex()`, and
   full-LTO codegen over a single function that size exhausted the runner: `wasm-ld` took SIGKILL
