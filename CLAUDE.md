@@ -101,7 +101,16 @@ Every one of these has already been paid for once.
 - **`make` runs on the HOST, not inside the builder image** - the Makefile shells out to
   `docker compose run` itself, so a container run dies with `docker: command not found`.
 - **GNU make >= 4.4 is required** (`Makefile:16` uses `--shuffle=random`). macOS ships 3.81; Ubuntu
-  images have shipped 4.3 for several releases, which is why CI builds 4.4.1 from source.
+  images have shipped 4.3 for several releases, which is why CI builds 4.4.1 from source. It is
+  fetched from ftpmirror.gnu.org, then mirrors.kernel.org, then ftp.gnu.org, verified by sha256,
+  because ftp.gnu.org alone hung a job for nine minutes across four retries and then failed it.
+- **vmswitch needs more memory to LINK than the other variants**, and CI gives it 24 GB of swap for
+  that reason. SWITCH dispatch regenerates `zend_vm_execute.h` into one enormous `execute_ex()`, and
+  full-LTO codegen over a single function that size exhausted the runner: `wasm-ld` took SIGKILL
+  while the other **9 of 11** variants linked fine with identical flags. Fix it with memory, never
+  by lowering LTO for this variant alone - the variant exists to isolate SWITCH from CALL dispatch,
+  so a second changed variable makes the comparison worthless. `build.yml` dumps `dmesg` on failure
+  so the next occurrence proves OOM instead of inferring it.
 
 ## Which numbers here are trustworthy
 
