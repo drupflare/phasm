@@ -57,6 +57,3 @@ WITH_OPENSSL=0
 WITH_PDO_PGLITE=0
 WITH_PDO_CFD1=0
 WITH_WAITLINE=0
-
-# opcache is compiled in; file_cache_only is set at runtime from the worker ini
-CONFIGURE_FLAGS+= --enable-opcache

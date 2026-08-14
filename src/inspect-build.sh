@@ -10,7 +10,7 @@
 # Everything here reads the artifact rather than the rc, so it reports what was
 # BUILT, not what was asked for. Four facts, in the order they change a verdict:
 #
-#   1. gzipped size, against the 3 MB free and 10 MB paid ceilings
+#   1. gzipped size, against the 3 MiB free and 10 MiB paid ceilings
 #   2. whether MAIN_MODULE=0 took -- a dylink section means it did not, and
 #      workerd cannot load the result at all
 #   3. whether the glue carries JSPI (WebAssembly.Suspending / .promising)
@@ -21,24 +21,26 @@
 # into the binary, which is the technique src/rc/control.rc documents.
 #
 # usage:
-#   src/inspect-build.sh <build-dir> [--expect-static] [--expect-jspi] [--expect-slice]
+#   src/inspect-build.sh <build-dir> [--expect-static] [--expect-jspi] [--expect-slice] [--expect-no-opcache]
 #
 # The --expect flags turn the report into a gate: each one that does not hold is
 # printed as FAIL and the script exits 1.
 set -euo pipefail
 
-DIR="${1:?usage: inspect-build.sh <build-dir> [--expect-static] [--expect-jspi] [--expect-slice]}"
+DIR="${1:?usage: inspect-build.sh <build-dir> [--expect-static] [--expect-jspi] [--expect-slice] [--expect-no-opcache]}"
 shift || true
 
 EXPECT_STATIC=0
 EXPECT_JSPI=0
 EXPECT_SLICE=0
+EXPECT_NO_OPCACHE=0
 EXPECT_RC=""
 for arg in "$@"; do
 	case "$arg" in
 		--expect-static) EXPECT_STATIC=1 ;;
 		--expect-jspi) EXPECT_JSPI=1 ;;
 		--expect-slice) EXPECT_SLICE=1 ;;
+		--expect-no-opcache) EXPECT_NO_OPCACHE=1 ;;
 		--expect-rc=*) EXPECT_RC="${arg#--expect-rc=}" ;;
 		*)
 			echo "unknown option: $arg"
@@ -61,15 +63,24 @@ GLUE="$(find "$DIR" -maxdepth 1 -name '*.mjs' | head -1)"
 
 size_of() { stat -f%z "$1" 2> /dev/null || stat -c%s "$1"; }
 
+# LEVEL 6 AND ONE STREAM, because that is what the meter does. wrangler compresses
+# the bundle it builds at gzip's default level over a single stream spanning both
+# uploaded files. This script used `gzip -9` summed per file, which reported 25,260
+# LOW on control85 and 22,475 low on noopcache85 -- optimistic, against a hard cap.
+# Measured, the LEVEL is the entire error: two streams versus one differed by 7 and
+# 82 bytes, because the wasm compresses to near-incompressible and the glue has
+# nothing useful to back-reference in it.
 RAW="$(size_of "$WASM")"
-GZ="$(gzip -9 -c "$WASM" | wc -c | tr -d ' ')"
+GZ="$(gzip -6 -c "$WASM" | wc -c | tr -d ' ')"
 GLUE_RAW=0
 GLUE_GZ=0
 if [ -n "$GLUE" ]; then
 	GLUE_RAW="$(size_of "$GLUE")"
-	GLUE_GZ="$(gzip -9 -c "$GLUE" | wc -c | tr -d ' ')"
+	GLUE_GZ="$(gzip -6 -c "$GLUE" | wc -c | tr -d ' ')"
+	TOTAL_GZ="$(cat "$WASM" "$GLUE" | gzip -6 -c | wc -c | tr -d ' ')"
+else
+	TOTAL_GZ="$GZ"
 fi
-TOTAL_GZ=$((GZ + GLUE_GZ))
 
 # dylink.0 in the first bytes means the build is still dynamically linked
 IS_STATIC=1
@@ -100,6 +111,14 @@ STRINGS_DUMP="$(mktemp -t inspectbuild.XXXXXX)"
 trap 'rm -f "$STRINGS_DUMP"' EXIT
 strings -a "$WASM" > "$STRINGS_DUMP" 2> /dev/null || true
 
+# read from the BINARY, never from the configure string. On 8.5 there is no
+# --enable-opcache flag any more, so the rc's inherited copy of it is accepted and
+# ignored: the CONFIGURE_COMMAND on a successfully de-opcached build still SAYS
+# --enable-opcache. `Zend OPcache` is the extension name the module registers and
+# went 7 -> 0 across control85 and noopcache85.
+HAS_OPCACHE=0
+grep -qa 'Zend OPcache' "$STRINGS_DUMP" && HAS_OPCACHE=1
+
 CONFIGURE="$(grep -m1 -- "'--disable-all'" "$STRINGS_DUMP" || true)"
 # only the tail matters: everything before --disable-all is php-wasm's own fixed
 # preamble and is identical in every variant
@@ -113,9 +132,12 @@ echo "wasm:             $(basename "$WASM")  raw=$RAW  gzip=$GZ"
 if [ -n "$GLUE" ]; then
 	echo "glue:             $(basename "$GLUE")  raw=$GLUE_RAW  gzip=$GLUE_GZ"
 fi
-echo "gzip total:       $TOTAL_GZ  (free ceiling 3145728, paid 10485760)"
+# a FLOOR for the deployed bundle, never the deployed figure: the consumer's own
+# code and assets land in the same stream
+echo "gzip total:       $TOTAL_GZ  one stream at -6  (free ceiling 3145728, paid 10485760)"
 echo "statically linked: $([ "$IS_STATIC" = 1 ] && echo yes || echo 'NO -- dylink section present')"
 echo "jspi:             $([ "$HAS_JSPI" = 1 ] && echo yes || echo no)"
+echo "opcache:          $([ "$HAS_OPCACHE" = 1 ] && echo yes || echo 'no -- not registered')"
 echo "slice exports:    ${SLICE_EXPORTS:-none}"
 echo "php version:      ${PHP_VERSION:-unknown}"
 echo "configure tail:  ${EXTENSIONS:- (not recovered)}"
@@ -131,6 +153,12 @@ if [ "$EXPECT_JSPI" = 1 ] && [ "$HAS_JSPI" != 1 ]; then
 fi
 if [ "$EXPECT_SLICE" = 1 ] && [ -z "$SLICE_EXPORTS" ]; then
 	echo "FAIL: expected the slice exports, but the glue has no _zend_wasm_slice_* -- patch-vm-interrupt.sh did not reach the binary"
+	FAILED=1
+fi
+# patch-drop-opcache.sh --verify reads config.m4, so it proves the SOURCE was edited
+# and not that the extension left the binary
+if [ "$EXPECT_NO_OPCACHE" = 1 ] && [ "$HAS_OPCACHE" != 0 ]; then
+	echo "FAIL: expected no opcache, but the binary still registers Zend OPcache -- the drop did not reach it"
 	FAILED=1
 fi
 
