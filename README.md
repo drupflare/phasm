@@ -73,31 +73,40 @@ a macro argument is what broke the opcache `config.m4` patch twice.
 
 ## 🔩 Variants
 
-Fourteen `.rc` files. Each is a complete configuration, not a diff, because the php-wasm
+One `.rc` file per variant, listed by `build.yml` rather than counted here. Each is a complete
+configuration, not a diff, because the php-wasm
 `configured` stamp is a plain file target: **a differing `CONFIGURE_FLAGS` in an rc is
 silently ignored once that stamp exists**, so matching the tree's own `config.nice` is
 mandatory rather than cosmetic.
 
-| Variant      | What it is                                      | Note                                                                                              |
-| ------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `control`    | reproduces the shipping build                   | reconstructed from the `CONFIGURE_COMMAND` string PHP compiles into the binary                    |
-| `control84`  | `control` at PHP 8.4                            | the midpoint that separates version drift from the 8.5 `ext/uri` + `ext/lexbor` bulk              |
-| `control85`  | `control` at PHP 8.5                            | the version Drupal 12 requires; `ext/uri` and `ext/lexbor` cannot be turned off from an rc        |
-| `iconv`      | `control` plus the real iconv extension         | **measured and rejected**: +655,677 gzip, 386,808 OVER the free ceiling, and no `mb_substr()` fix |
-| `mbstring`   | `control` plus the real mbstring extension      | the actual `mb_substr()` fix, and the one that breaks the free-tier budget                        |
-| `nolto`      | `control` with LTO removed, `-O2` held constant | isolates what LTO is worth; see below                                                             |
-| `vmswitch`   | `control` against a SWITCH-dispatch Zend VM     | needs `zend_vm_gen.php --with-vm-kind=SWITCH`, which `build-variant.sh` runs for it               |
-| `jspi`       | `control` plus JSPI plus the VM interrupt patch | the shippable shape: no mbstring, so it fits                                                      |
-| `jspimb`     | `mbstring` plus JSPI                            | carries the mbstring fix and is over the free ceiling                                             |
-| `jspisjlj`   | `jspi` plus wasm SjLj                           | the variant that can actually suspend from inside PHP                                             |
-| `jspimbsjlj` | `jspimb` plus wasm SjLj                         | plain `-sJSPI` measured **broken** without it; see below                                          |
-| `min85`      | 8.5 with only `dom`, `libxml2` and `vrzno`      | not shippable; it bounds how much of the ceiling the unavoidable extensions leave                 |
-| `trim85`     | `control85` minus `yaml` and `zlib`             | needs the fflate bridge in the consumer before it can ship                                        |
-| `nopdo85`    | `control85` minus `ext-pdo`                     | needs `drupflare/rom`'s userland `PDO` in the deployed tree first                                 |
+| Variant       | What it is                                      | Note                                                                                               |
+| ------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `control`     | reproduces the shipping build                   | reconstructed from the `CONFIGURE_COMMAND` string PHP compiles into the binary                     |
+| `control84`   | `control` at PHP 8.4                            | the midpoint that separates version drift from the 8.5 `ext/uri` + `ext/lexbor` bulk               |
+| `control85`   | `control` at PHP 8.5                            | the version Drupal 12 requires; `ext/uri` and `ext/lexbor` cannot be turned off from an rc         |
+| `iconv`       | `control` plus the real iconv extension         | **measured and rejected**: +655,677 gzip, 386,808 OVER the free ceiling, and no `mb_substr()` fix  |
+| `mbstring`    | `control` plus the real mbstring extension      | the actual `mb_substr()` fix, and the one that breaks the free-tier budget                         |
+| `nolto`       | `control` with LTO removed, `-O2` held constant | isolates what LTO is worth; see below                                                              |
+| `vmswitch`    | `control` against a SWITCH-dispatch Zend VM     | needs `zend_vm_gen.php --with-vm-kind=SWITCH`, which `build-variant.sh` runs for it                |
+| `jspi`        | `control` plus JSPI plus the VM interrupt patch | the shippable shape: no mbstring, so it fits                                                       |
+| `jspimb`      | `mbstring` plus JSPI                            | carries the mbstring fix and is over the free ceiling                                              |
+| `jspisjlj`    | `jspi` plus wasm SjLj                           | the variant that can actually suspend from inside PHP                                              |
+| `jspimbsjlj`  | `jspimb` plus wasm SjLj                         | plain `-sJSPI` measured **broken** without it; see below                                           |
+| `min85`       | 8.5 with only `dom`, `libxml2` and `vrzno`      | not shippable; it bounds how much of the ceiling the unavoidable extensions leave                  |
+| `trim85`      | `control85` minus `yaml` and `zlib`             | needs the fflate bridge in the consumer before it can ship                                         |
+| `nopdo85`     | `control85` minus `ext-pdo`                     | needs `drupflare/rom`'s userland `PDO` in the deployed tree first                                  |
+| `noopcache85` | `min85` with `ext/opcache` dropped              | 8.5 removed the disable flag, so it takes a source patch; no symbol stub is needed on an NTS build |
 
 **`iconv` is rejected.** `static-iconv` is **3,532,536 bytes** gzipped against `control`'s
 2,876,859: a cost of **655,677**, landing **386,808 over the 3,145,728 free ceiling**. That is
 within 9% of what real `mbstring` costs (586,923), and it does not fix `mb_substr()`.
+
+`src/rc/nolexbor85.rc.pending` is deliberately NOT in the matrix. `plan` discovers variants with
+`find src/rc -name '*.rc'`, so the extension is what keeps it out; a subdirectory would not, since
+that find recurses. It stays pending because dropping lexbor's HTML half needs a source patch to
+`ext/dom/php_dom.c`, its arginfo header and `element.c` -- the `config.m4` deletions alone leave 21
+symbols undefined, so `src/patch-drop-lexbor-html.sh` refuses by default rather than producing a
+tree that cannot link.
 
 **`nolto` carries `LTO_FLAG=-O2` rather than an empty value.** `-O${OPTIMIZE}` reaches only the
 link flags, so `LTO_FLAG` is the sole optimization in the compile half (php-wasm `Makefile:404`,

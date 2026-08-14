@@ -114,6 +114,13 @@ Every one of these has already been paid for once.
   directly at lines 285-301, which is exactly the split observed in the artifacts. **CI must run
   `npm install` in the php-wasm checkout before building**; it did not, and eleven variants per run
   were published missing seven extensions each, `ext-dom` among them.
+- **A patch must rewrite php-src files IN PLACE; it cannot create a sibling.** The tree is created
+  inside the builder container, so the host has write permission on an existing FILE but not on the
+  DIRECTORY. `awk > config.m4.new` and `sed -i.orig` both fail with `Permission denied`, and
+  `patch-drop-opcache.sh` cost a CI slot proving it. `patch-vm-interrupt.sh` is the working model:
+  python reads the path and writes the same path. This is the third time this boundary has bitten,
+  after the `cp -R` and `perl -i` failures in `build-static.sh`, which route through `in_builder()`
+  instead.
 - **A knowingly-unbuildable variant must be `.rc.pending`, not `.rc`.** `plan` discovers the matrix
   with `find src/rc -name '*.rc'`, which recurses, so a subdirectory does NOT hide one -- only the
   extension does. `src/rc/nolexbor85.rc` was added complete-but-unbuildable and failed every push
