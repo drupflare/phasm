@@ -114,6 +114,13 @@ Every one of these has already been paid for once.
   directly at lines 285-301, which is exactly the split observed in the artifacts. **CI must run
   `npm install` in the php-wasm checkout before building**; it did not, and eleven variants per run
   were published missing seven extensions each, `ext-dom` among them.
+- **Both 8.3 and 8.5 resolve to `ZEND_VM_KIND_CALL` on wasm32, so a version comparison is not
+  contaminated by the VM.** `Zend/zend_vm_opcodes.h` tries HYBRID (needs `HAVE_GCC_GLOBAL_REGS`, which
+  the wasm probe leaves `#undef`), then TAILCALL (gated on `__x86_64__ || __aarch64__`, and wasm32 is
+  neither), then falls through to CALL. 8.5's new tailcall VM is unreachable on this target. Read this
+  from a BUILT tree's generated header, never by grepping the source: the first attempt matched
+  `ZEND_VM_KIND_HYBRID` inside `#if (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID)` and would have recorded the
+  opposite of the truth.
 - **`WITH_SESSION=0` does not link**: `undefined symbol: ps_globals`, ext/session's globals struct,
   is referenced unconditionally. Core's `composer.json` requires `ext-session` anyway, so a variant
   without it could never ship even if it linked. Same for `filter`, `tokenizer` and `ctype`.
