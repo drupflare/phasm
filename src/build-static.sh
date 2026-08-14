@@ -76,9 +76,16 @@ if [ -f "$OPCACHE_M4" ] && ! grep -q 'have_shm_mmap_anon=yes\],\[have_shm_mmap_a
 	perl -0pi -e 's/\[have_shm_mmap_posix=yes\],\[have_shm_mmap_posix=no\],\[have_shm_mmap_posix=no\]/[have_shm_mmap_posix=yes],[have_shm_mmap_posix=no],[have_shm_mmap_posix=yes]/' "$OPCACHE_M4"
 	# the branch autoconf actually takes when cross_compiling is "no"
 	perl -0pi -e 's/\[have_shm_mmap_anon=no\]/[have_shm_mmap_anon=yes]/' "$OPCACHE_M4"
-	grep -q 'have_shm_mmap_anon=yes\],\[have_shm_mmap_anon=yes\]' "$OPCACHE_M4" \
-		&& echo "patched opcache config.m4 (forced SHM = yes on both the run and cross branches)" \
-		|| echo "WARN: opcache patch did not apply"
+	# fatal, not a warning: an unapplied patch surfaces ~8 minutes later as
+	# "No supported shared memory caching support" out of configure, which reads as a
+	# toolchain problem rather than as this substitution missing
+	if grep -q 'have_shm_mmap_anon=yes\],\[have_shm_mmap_anon=yes\]' "$OPCACHE_M4"; then
+		echo "patched opcache config.m4 (forced SHM = yes on both the run and cross branches)"
+	else
+		echo "opcache config.m4 patch did not apply; the shape it targets has changed" >&2
+		grep -n 'have_shm_mmap_anon' "$OPCACHE_M4" >&2 || true
+		exit 1
+	fi
 fi
 # buildconf regenerates ./configure from config.m4; without this the patch is inert.
 # Only when the patch actually changed something, though: dropping the stamp
