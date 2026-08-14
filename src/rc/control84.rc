@@ -1,0 +1,57 @@
+# control.rc at PHP_VERSION=8.4. Byte-for-byte the same extension selection as
+# src/rc/control.rc; only PHP_VERSION differs, so the wasm delta against
+# vendor/static-o2 is attributable to php-src 8.3 -> 8.4 and nothing else.
+#
+# Exists because Drupal 12 requires PHP 8.5 and the 8.5 cost had only ever been
+# EXTRAPOLATED. 8.4 is the midpoint that says how much of an 8.3 -> 8.5 delta is
+# ordinary version drift rather than the new mandatory ext/uri + ext/lexbor bulk.
+#
+# php-wasm pins 8.4 to the php-8.4.1 tag (Makefile:172).
+
+PHP_VERSION=8.4
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=static
+WITH_XML=static
+WITH_YAML=static
+WITH_ZLIB=static
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_ICONV=0
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+# opcache is compiled in; file_cache_only is set at runtime from the worker ini
+CONFIGURE_FLAGS+= --enable-opcache
