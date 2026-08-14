@@ -8,7 +8,7 @@
 		"prettier:check": "prettier --check .",
 		"lint": "bash tools/lint-shell.sh",
 		"test": "bash tools/test-patch-verify.sh",
-		"lint:shellcheck": "find src tools -name '*.sh' -print0 | xargs -0 shellcheck",
+		"lint:shellcheck": "find src tools -name '*.sh' -print0 | xargs -0 shellcheck -x",
 		"lint:md": "markdownlint-cli2 \"**/*.md\" \"!node_modules\"",
 		"lint:c": "clang-format --style=file --dry-run --Werror src/probes/*.c",
 		"format:c": "clang-format --style=file -i src/probes/*.c",
@@ -27,7 +27,7 @@
 		"*.sh": [
 			"prettier --write",
 			"bash tools/lint-shell.sh",
-			"shellcheck"
+			"shellcheck -x"
 		],
 		"*.{c,h,cpp,hpp,cc}": [
 			"clang-format --style=file -i",
