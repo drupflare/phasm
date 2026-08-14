@@ -307,11 +307,12 @@ jobs:
       - name: Report Whether the Kernel Killed the Link
         if: failure()
         run: |
-          free -h
           if sudo dmesg | grep -iE 'out of memory|killed process'; then
+            free -h
             echo "::error::the kernel OOM-killed a build process; raise the swap step above" >&2
           else
-            echo "no OOM kill in dmesg, so a SIGKILL here was not memory exhaustion"
+            echo "No kernel OOM kill in dmesg. This step says NOTHING about why the build failed;"
+            echo "it only rules out memory exhaustion. Read the build log above for the real cause."
           fi
 
       - name: Save the Emscripten Sysroot
