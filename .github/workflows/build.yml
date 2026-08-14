@@ -325,16 +325,18 @@ jobs:
         run: |
           set -o pipefail
           OUT="vendor/static-${{ matrix.variant }}"
-          ARGS="--expect-static"
-          ARGS="$ARGS --expect-rc=$RC"
+          ARGS=(--expect-static "--expect-rc=$RC")
           if grep -q 'JSPI=1' "$RC"; then
-            ARGS="$ARGS --expect-jspi"
+            ARGS+=(--expect-jspi)
           fi
           if [ "${{ inputs.patch_vm_interrupt }}" = 'true' ]; then
-            ARGS="$ARGS --expect-slice"
+            ARGS+=(--expect-slice)
           fi
-          echo "asserting: $ARGS"
-          bash src/inspect-build.sh "$OUT" $ARGS | tee /tmp/inspect.txt
+          if grep -qE '^DROP_OPCACHE=1' "$RC"; then
+            ARGS+=(--expect-no-opcache)
+          fi
+          echo "asserting: ${ARGS[*]}"
+          bash src/inspect-build.sh "$OUT" "${ARGS[@]}" | tee /tmp/inspect.txt
 
       - name: Record the Toolchain
         run: |
