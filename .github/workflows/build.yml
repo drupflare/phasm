@@ -248,6 +248,19 @@ jobs:
           fi
           bash src/fetch-deps.sh "$PHP_WASM_DIR" $ICONV
 
+      - name: Enlarge Swap for the LTO Link
+        run: |
+          echo "before:"
+          free -h
+          sudo swapoff -a || true
+          sudo rm -f /mnt/swapfile
+          sudo fallocate -l 24G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile > /dev/null
+          sudo swapon /mnt/swapfile
+          echo "after:"
+          free -h
+
       - name: Build the Variant
         run: |
           if grep -q 'SUPPORT_LONGJMP=wasm' "$RC"; then
@@ -255,6 +268,16 @@ jobs:
             echo "MAKE_EXTRA=$MAKE_EXTRA"
           fi
           JOBS="$(nproc)" bash src/build-variant.sh "${{ matrix.variant }}" "$PHP_WASM_DIR"
+
+      - name: Report Whether the Kernel Killed the Link
+        if: failure()
+        run: |
+          free -h
+          if sudo dmesg | grep -iE 'out of memory|killed process'; then
+            echo "::error::the kernel OOM-killed a build process; raise the swap step above" >&2
+          else
+            echo "no OOM kill in dmesg, so a SIGKILL here was not memory exhaustion"
+          fi
 
       - name: Save the Emscripten Sysroot
         if: ${{ !cancelled() && steps.emsdk-cache.outputs.cache-hit != 'true' }}
