@@ -17,12 +17,19 @@
 # libiconv.a has all 3 members as LTO BITCODE, and a bitcode member has no relocations to complain
 # about. The archive that fails carries a native non-PIC object instead.
 #
-# THE FIX, and why it is on configure rather than in the environment. `CFLAGS=` on the configure line
-# is recorded in the generated Makefiles, so libtool propagates it into every compile it drives. That
-# does not depend on an environment variable surviving a wrapper. The cache file is given its own
-# path at the same time, because autoconf caches feature-test results and its own manual warns
-# against sharing a cache across different compiler flags -- the shared /tmp/config-cache is used by
-# other packages built without these flags.
+# THE FIX IS `--with-pic`, and the first attempt used the wrong mechanism. libtool DECIDES whether to
+# emit PIC: for `--enable-shared=no` it builds only non-PIC objects, because a static archive does not
+# need them. So passing `CFLAGS=-fPIC` fights libtool's own logic. `--with-pic` is the standard
+# libtool option that says "PIC even for the static library", and it is the mechanism this needs.
+# `-flto` is kept alongside it because an LTO member is bitcode, which has no relocations to reject
+# at all -- that is why a locally built archive links: all three of its members are bitcode.
+#
+# THE FIRST ATTEMPT ALSO PATCHED A LINE THE BUILD DID NOT USE. Its regex required
+# `--prefix=... .*--enable-static=yes` in that order; CI installs the PUBLISHED php-wasm-iconv, whose
+# configure line orders the flags differently. The patch matched a line, `--verify` passed, and the
+# configure that actually ran was untouched with the old shared cache. So the matcher is now
+# order-independent, it rewrites EVERY libiconv configure invocation it can find, and --verify fails
+# if any unpatched one remains anywhere in the checkout.
 #
 # THIS PATCHES A DEPENDENCY, NOT php-src. The recipe lives in php-wasm's own
 # node_modules/php-wasm-iconv/static.mak, so this is an upstream defect and the patch belongs
@@ -39,8 +46,7 @@ set -euo pipefail
 CHECKOUT="${1:?usage: patch-iconv-pic.sh <php-wasm-checkout> [--verify]}"
 MODE="${2:-apply}"
 
-MAK="$CHECKOUT/node_modules/php-wasm-iconv/static.mak"
-CFLAGS_ADD="CFLAGS='-fPIC -flto -O\${SUB_OPTIMIZE}'"
+CFLAGS_ADD="--with-pic CFLAGS='-fPIC -flto -O\${SUB_OPTIMIZE}'"
 CACHE_NEW="--cache-file=/tmp/config-cache-iconv-pic"
 
 fail() {
@@ -48,45 +54,62 @@ fail() {
 	exit 1
 }
 
-[ -f "$MAK" ] || fail "no php-wasm-iconv/static.mak at $MAK; was npm install run in the checkout?"
-
-# the shape: libiconv's own configure line, the one libtool inherits from
-configure_line() { grep -nE "emconfigure \./configure --prefix=/src/lib/ .*--enable-static=yes" "$MAK" | head -1; }
-# anchored to the CONFIGURE line on purpose. A bare `grep -F "CFLAGS='-fPIC..."` matches inside the
-# EXISTING `-e EMCC_CFLAGS='-fPIC -flto -O${SUB_OPTIMIZE}'` on the docker line, so it reported
-# "already patched" on a virgin tree and would have skipped the fix while exiting 0
-patched() { grep -qE "emconfigure \./configure --prefix=/src/lib/ .*CFLAGS=" "$MAK"; }
+# every file in the checkout that configures libiconv. Order-independent: a line that runs
+# `./configure` in a libiconv directory and asks for a static build, whatever order the flags are in.
+# CI installs the PUBLISHED php-wasm-iconv and the repo carries its own copy under packages/; they do
+# not agree on flag order, which is what defeated the first version of this patch.
+# DOCKER_RUN_IN_ICONV is on the same line and is what makes this libiconv's configure rather than
+# any other package's. A first version matched `emconfigure ./configure .*--enable-static=yes`, which
+# also hit libyaml and mbstring -- two packages that build fine and are not this patch's business.
+LIBICONV_RE='DOCKER_RUN_IN_ICONV.*emconfigure \./configure'
+targets() {
+	grep -rlE "$LIBICONV_RE" "$CHECKOUT" --include='*.mak' --include='Makefile' 2> /dev/null | sort -u
+}
+unpatched() {
+	grep -rlE "$LIBICONV_RE" "$CHECKOUT" --include='*.mak' --include='Makefile' 2> /dev/null \
+		| xargs -r grep -LE "DOCKER_RUN_IN_ICONV.*--with-pic" | sort -u
+}
 
 if [ "$MODE" = '--verify' ]; then
-	patched || fail "not patched: libiconv's configure line carries no explicit CFLAGS"
-	grep -qF -- "$CACHE_NEW" "$MAK" || fail "the CFLAGS are present but the config cache is still shared"
-	echo "ok: libiconv configures with -fPIC -flto and its own config cache"
+	left="$(unpatched)"
+	[ -z "$left" ] || fail "these still configure libiconv without --with-pic:
+$left"
+	found="$(targets)"
+	[ -n "$found" ] || fail "no libiconv configure line anywhere under $CHECKOUT; the shape moved"
+	echo "ok: every libiconv configure carries --with-pic"
+	printf '%s\n' "$found" | sed 's/^/     /'
 	exit 0
 fi
 
-patched && fail "already patched; re-running would be a no-op reporting success"
+found="$(targets)"
+[ -n "$found" ] || fail "no libiconv configure line anywhere under $CHECKOUT; the shape moved and this patch would do nothing"
 
-line="$(configure_line || true)"
-[ -n "$line" ] || fail "no libiconv configure line in $MAK; the shape moved and this patch would do nothing"
-lineno="${line%%:*}"
+count=0
+while IFS= read -r mak; do
+	[ -n "$mak" ] || continue
+	if grep -qE "DOCKER_RUN_IN_ICONV.*--with-pic" "$mak"; then
+		echo "note  already patched, skipping: $mak"
+		continue
+	fi
+	NEW="$(awk -v add="$CFLAGS_ADD" -v cache="$CACHE_NEW" '
+		/DOCKER_RUN_IN_ICONV.*emconfigure \.\/configure/ {
+			sub(/--cache-file=[^ ]*/, cache)
+			print $0 " " add
+			next
+		}
+		{ print }
+	' "$mak")" || fail "the awk edit failed on $mak"
+	[ -n "$NEW" ] || fail "the awk edit produced nothing for $mak"
+	printf '%s\n' "$NEW" > "$mak"
+	grep -qE "DOCKER_RUN_IN_ICONV.*--with-pic" "$mak" || fail "the edit did not take in $mak"
+	echo "patched $mak"
+	count=$((count + 1))
+done << EOF
+$found
+EOF
 
-# computed on the host, written in place. A sibling file would be fine here (node_modules is
-# host-owned) but an in-place write is the shape the rest of the patches use
-NEW="$(awk -v add="$CFLAGS_ADD" -v cache="$CACHE_NEW" '
-	/emconfigure \.\/configure --prefix=\/src\/lib\/ .*--enable-static=yes/ && !done {
-		sub(/--cache-file=[^ ]*/, cache)
-		print $0 " " add
-		done = 1
-		next
-	}
-	{ print }
-' "$MAK")" || fail "the awk edit failed"
-
-[ -n "$NEW" ] || fail "the awk edit produced nothing"
-printf '%s\n' "$NEW" > "$MAK"
-
-patched || fail "the CFLAGS were not written; refusing to report success"
-grep -qF -- "$CACHE_NEW" "$MAK" || fail "the cache file was not repointed; refusing to report success"
-
-echo "patched libiconv's configure at line $lineno of node_modules/php-wasm-iconv/static.mak"
-echo "added $CFLAGS_ADD and gave it $CACHE_NEW"
+[ "$count" -gt 0 ] || fail "found libiconv configure lines but patched none; refusing to report success"
+left="$(unpatched)"
+[ -z "$left" ] || fail "patched $count file(s) but these remain unpatched:
+$left"
+echo "added --with-pic (plus -flto and a private config cache) to $count libiconv configure line(s)"
