@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# Build a STATIC (MAIN_MODULE=0) php-wasm with Drupal's required extensions
+# linked in, because workerd forbids the runtime wasm codegen that emscripten's
+# dynamic linker needs. Dylink builds cannot load .so extensions in Workers at
+# all, so every extension Drupal requires must be compiled in.
+#
+# Extension selection lives in <checkout>/.php-wasm-rc.
+#
+# This runs make on the HOST, not inside the builder image: the Makefile shells
+# out to `docker compose run` for the compile steps itself, so running it inside
+# a container fails with "docker: command not found".
+#
+# Requires GNU make >= 4.4 (MAKEFLAGS uses --shuffle). macOS ships 3.81, so
+# `brew install make` and use gmake.
+set -euo pipefail
+
+SRC="${1:?usage: build-static.sh <path-to-php-wasm-checkout>}"
+OUT="${OUT:-$(cd "$(dirname "$0")/.." && pwd)/vendor/static}"
+JOBS="${JOBS:-4}"
+
+MAKE_BIN="$(command -v gmake || echo /opt/homebrew/opt/make/libexec/gnubin/make)"
+[ -x "$MAKE_BIN" ] || {
+	echo "need GNU make >= 4.4 (brew install make)"
+	exit 1
+}
+
+cd "$SRC"
+
+# Two local patches are required and are applied to a copy of the Makefile:
+#
+# 1. PHP_CONFIGURE_DEPS is empty when every extension is static, so
+#    `$(MAKE) -j -l ${PHP_CONFIGURE_DEPS}` runs with no target, falls through to
+#    the default goal, and recurses forever at 0% CPU. Guard it with $(if).
+# 2. MAX_LOAD is nproc*1.5, but the x86_64 image runs under QEMU on Apple
+#    Silicon and the emulated load average pegs high enough that make's -l gate
+#    never starts a job.
+# opcache: opcache's config.m4 detects shared memory with AC_RUN_IFELSE, which
+# cannot execute a test binary under cross-compilation, so autoconf takes the
+# third (cross-compiling) branch. That branch already carries an allowlist by
+# host triple -- `*linux*` yields yes -- and emscripten's triple
+# (wasm32-unknown-emscripten) simply is not in it. So the earlier
+# "No supported shared memory caching support was found" was a cross-compilation
+# artifact, not a statement about emscripten's capabilities.
+#
+# This matters because opcache.file_cache_only=1 needs no shared memory at
+# runtime: ZendAccelerator.c accel_startup() returns SUCCESS before
+# zend_shared_alloc_startup() when file_cache_only is set. Only configure has to
+# be satisfied.
+#
+# Wasmer reported ~3x on WordPress from exactly this (620ms -> 205ms).
+# Matching on $host_alias does not work here: emconfigure invokes ./configure
+# without --host, so host_alias is empty and `case "" in *linux*)` never fires.
+#
+# That same missing --host is why patching ONLY the AC_RUN_IFELSE cross-compiling
+# argument is inert, which cost a full 13-minute configure to learn: with no
+# --host autoconf sets cross_compiling=no, so the generated configure takes the
+# `ac_fn_c_try_run` branch, links conftest as wasm, cannot execute it, and lands
+# on the FAILURE argument. Measured as
+# "checking for mmap() using MAP_ANON shared memory support... no" followed by
+# AC_MSG_ERROR at ext/opcache/config.m4:318. So the failure argument has to be
+# forced too; the cross argument is kept for a future emconfigure that does pass
+# --host. Forcing anon rather than posix is deliberate: HAVE_SHM_MMAP_ANON is
+# what selects a shared-alloc backend in zend_shared_alloc.c, and with
+# file_cache_only=1 that backend is never entered.
+#
+# The marker must never be `dnl` on a line that still has macro text after it:
+# dnl comments to end of line, so an inline `[have_shm_mmap_anon=yes dnl mark]`
+# eats the following `],[...` and buildconf then emits a configure that dies with
+# "line 102036: syntax error: unexpected end of file". Idempotency is therefore
+# keyed on the patched shape, not on a marker string.
+OPCACHE_M4=third_party/php${PHP_VERSION:-8.3}-src/ext/opcache/config.m4
+PATCHED_OPCACHE=0
+if [ -f "$OPCACHE_M4" ] && ! grep -q 'have_shm_mmap_anon=yes\],\[have_shm_mmap_anon=yes\]' "$OPCACHE_M4"; then
+	PATCHED_OPCACHE=1
+	perl -0pi -e 's/\[have_shm_mmap_anon=yes\],\[have_shm_mmap_anon=no\],\[\n.*?\n\]\)/[have_shm_mmap_anon=yes],[have_shm_mmap_anon=no],[have_shm_mmap_anon=yes dnl phpwasm-forced\n])/s' "$OPCACHE_M4"
+	perl -0pi -e 's/\[have_shm_mmap_posix=yes\],\[have_shm_mmap_posix=no\],\[have_shm_mmap_posix=no\]/[have_shm_mmap_posix=yes],[have_shm_mmap_posix=no],[have_shm_mmap_posix=yes]/' "$OPCACHE_M4"
+	# the branch autoconf actually takes when cross_compiling is "no"
+	perl -0pi -e 's/\[have_shm_mmap_anon=no\]/[have_shm_mmap_anon=yes]/' "$OPCACHE_M4"
+	grep -q 'have_shm_mmap_anon=yes\],\[have_shm_mmap_anon=yes\]' "$OPCACHE_M4" \
+		&& echo "patched opcache config.m4 (forced SHM = yes on both the run and cross branches)" \
+		|| echo "WARN: opcache patch did not apply"
+fi
+# buildconf regenerates ./configure from config.m4; without this the patch is inert.
+# Only when the patch actually changed something, though: dropping the stamp
+# unconditionally forces a ~14 min QEMU reconfigure on every resume and throws
+# away a compile that only needed its remaining objects.
+if [ "$PATCHED_OPCACHE" = 1 ]; then
+	rm -f "third_party/php${PHP_VERSION:-8.3}-src/configured"
+fi
+
+# the single quotes are the point: this is literal Makefile text, not shell to expand
+# shellcheck disable=SC2016
+grep -q 'if $(strip ${PHP_CONFIGURE_DEPS})' Makefile || {
+	cp Makefile Makefile.orig
+	perl -pi -e 's/^\t\$\(MAKE\) -j\$\{CPU_COUNT\} -l\$\{MAX_LOAD\} \$\{PHP_CONFIGURE_DEPS\}$/\t\$(if \$(strip \$\{PHP_CONFIGURE_DEPS\}),\$(MAKE) -j\$\{CPU_COUNT\} -l\$\{MAX_LOAD\} \$\{PHP_CONFIGURE_DEPS\},\@true)/' Makefile
+	echo "patched PHP_CONFIGURE_DEPS recursion guard"
+}
+
+# worker-mjs builds with ENVIRONMENT_IS_WORKER, which skips emscripten's html5
+# library -- no document/window to shim, closer to workerd's globals.
+export ENVIRONMENT=worker
+export HOST_PROJECT_ROOT="$SRC"
+
+# MAKE_EXTRA overrides an rc setting WITHOUT editing the rc, which matters
+# because the Makefile's `configured` target lists ENV_FILE as a prerequisite:
+# touching the rc costs a full ~15 min QEMU reconfigure. A command-line make
+# variable beats an `-include`d assignment, so `MAKE_EXTRA=OPTIMIZE=3` relinks in
+# place. Only safe for link-only settings (OPTIMIZE, LTO_FLAG, EXTRA_FLAGS);
+# anything reaching CONFIGURE_FLAGS is silently ignored once the stamp exists.
+#
+# MAKE_EXTRA is deliberately unquoted below: it carries make variable assignments that
+# have to word-split into separate arguments, and quoting it would hand make one empty
+# argument whenever it is unset.
+# shellcheck disable=SC2086
+"$MAKE_BIN" worker-mjs \
+	PHP_BUILDER_DIR="$SRC" \
+	BUILD_TYPE=mjs \
+	IS_TTY=0 \
+	ENV_DIR="$SRC/" \
+	ENV_FILE="$SRC/.php-wasm-rc" \
+	CPU_COUNT="$JOBS" \
+	MAX_LOAD=1000 \
+	${MAKE_EXTRA:-}
+
+mkdir -p "$OUT"
+find . -maxdepth 2 -name '*.wasm' -newer .php-wasm-rc -exec cp {} "$OUT/" \; 2> /dev/null || true
+find . -maxdepth 2 -name 'php*-worker.mjs' -newer .php-wasm-rc -exec cp {} "$OUT/" \; 2> /dev/null || true
+
+echo "--- static build output ---"
+ls -la "$OUT" || true
+for f in "$OUT"/*.wasm; do
+	[ -e "$f" ] || continue
+	raw=$(stat -f%z "$f" 2> /dev/null || stat -c%s "$f")
+	gz=$(gzip -9 -c "$f" | wc -c | tr -d ' ')
+	printf '%s raw=%s gzip=%s (free limit 3145728, paid 10485760)\n' "$(basename "$f")" "$raw" "$gz"
+	# dylink.0 in the first bytes means the build is still dynamically linked
+	if head -c 16 "$f" | grep -qa dylink; then
+		echo "  WARNING: still a dylink build -- MAIN_MODULE=0 did not take"
+	else
+		echo "  OK: no dylink section, statically linked"
+	fi
+done
