@@ -103,10 +103,11 @@ else
 	echo "zlib: fetching v1.3.1"
 	[ -d "$THIRD/zlib" ] || git clone --depth 1 --branch v1.3.1 \
 		https://github.com/madler/zlib.git "$THIRD/zlib"
-	# zlib's configure takes no --enable-static; static is its default and the recovered
-	# Makefile records only `prefix =/src/lib/`
+	# --static is required, not optional: without it zlib builds libz.so AND links two test
+	# programs against it, and wasm-ld rejects a .so with "unknown file type". The warm tree's
+	# configure.log records `./configure --prefix=/src/lib/ --static`.
 	in_builder /src/third_party/zlib "
-		emconfigure ./configure --prefix=$PREFIX
+		emconfigure ./configure --prefix=$PREFIX --static
 		emmake make -j\"\$(nproc)\" && emmake make install
 	"
 fi
