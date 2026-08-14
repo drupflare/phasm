@@ -14,12 +14,12 @@ shipped php-wasm build works there and every extension has to be statically link
 
 - [Why Static](#-why-static)
 - [What Is Here](#-what-is-here)
-- [The Variants](#-the-variants)
+- [Variants](#-variants)
 - [Prerequisites](#-prerequisites)
 - [Building Locally](#-building-locally)
 - [Inspecting a Build](#-inspecting-a-build)
-- [The Consumer Contract](#-the-consumer-contract)
-- [The VM Interrupt Patch](#-the-vm-interrupt-patch)
+- [Consumer Contract](#-consumer-contract)
+- [VM Interrupt Patch](#-vm-interrupt-patch)
 - [Working on the Scripts](#-working-on-the-scripts)
 - [Related Repositories](#-related-repositories)
 - [License](#-license)
@@ -71,7 +71,7 @@ a macro argument is what broke the opcache `config.m4` patch twice.
 
 ---
 
-## 🔩 The Variants
+## 🔩 Variants
 
 Nine `.rc` files. Each is a complete configuration, not a diff, because the php-wasm
 `configured` stamp is a plain file target: **a differing `CONFIGURE_FLAGS` in an rc is
@@ -227,7 +227,7 @@ also exactly what a control for `jspisjlj` should look like.
 
 ---
 
-## 🔗 The Consumer Contract
+## 🔗 Consumer Contract
 
 The split is clean because it is **one file plus one release asset**. In
 [`drupflare/worker`](https://github.com/drupflare/worker), `src/runtime/php-binary.js` is
@@ -242,7 +242,7 @@ parses: `site-jspi` is 10,215 KiB against `site` at 12,108 KiB.
 
 ---
 
-## ⚡ The VM Interrupt Patch
+## ⚡ VM Interrupt Patch
 
 `patch-vm-interrupt.sh` is the most valuable and the most fragile thing here, because it
 patches PHP's own source.
