@@ -94,7 +94,9 @@ done
 # successful match into a failed pipeline -- nondeterministically, depending on where
 # in a 9 MB binary the match lands. It reported "unknown" for one variant and the right
 # answer for another from the same code.
-STRINGS_DUMP="$(mktemp -t inspectbuild)"
+# the XXXXXX is required: GNU mktemp rejects a template without it, and this script only ever ran
+# on macOS until pipefail stopped tee from swallowing its exit status
+STRINGS_DUMP="$(mktemp -t inspectbuild.XXXXXX)"
 trap 'rm -f "$STRINGS_DUMP"' EXIT
 strings -a "$WASM" > "$STRINGS_DUMP" 2> /dev/null || true
 
