@@ -112,26 +112,38 @@ Every one of these has already been paid for once.
   so a second changed variable makes the comparison worthless. `build.yml` dumps `dmesg` on failure
   so the next occurrence proves OOM instead of inferring it.
 
-## Getting per-object byte attribution without building a variant per question
+## A link map does NOT give per-extension attribution on this build, and LTO is why
 
-Most size questions here have been answered by building a whole variant and diffing, which is ~20
-minutes of QEMU per bit of information and is why "what does simplexml cost" is still unknown. A
-**link map** answers a dozen of them from one link: `wasm-ld -Map` attributes every symbol to the
-object file it came from.
+**MEASURED 2026-08-14, and it corrects what this file said an hour earlier.** The map is easy to get
+and it answers nothing about extensions.
 
-No code change is needed. `SYMBOL_FLAGS` defaults to **empty** (`Makefile:351`), is interpolated into
-`EXTRA_LDFLAGS_PROGRAM` (`Makefile:408`), and the `EXTRA_FLAGS+=${SYMBOL_FLAGS}` append at `:355` is
-guarded by `ifdef SYMBOLS` rather than by `SYMBOL_FLAGS`, so overriding it replaces nothing:
+Getting one needs no code change. `SYMBOL_FLAGS` defaults to **empty** (`Makefile:351`), is
+interpolated into `EXTRA_LDFLAGS_PROGRAM` (`Makefile:408`), and the `EXTRA_FLAGS+=${SYMBOL_FLAGS}`
+append at `:355` is guarded by `ifdef SYMBOLS` rather than by `SYMBOL_FLAGS`, so overriding it
+replaces nothing:
 
 ```sh
 MAKE_EXTRA='SYMBOL_FLAGS=-Wl,-Map=/src/link-map.txt' bash src/build-variant.sh control <checkout>
 ```
 
-Two constraints on reading the result. It has to be asked for **at link time** -- the shipping binary
-is stripped at `-O2`, so `strings` finds no symbol names and nothing is recoverable from the artifact
-afterwards. And the map reports **raw** bytes while the ceiling is **gzip**, which `-O3` already
-proved can move in opposite directions here, so treat the map as triage and confirm the top few
-candidates with a real build.
+That produced a 3,085,283-byte map. Parsed, it attributes **14,344,108 of 14,755,563 raw bytes --
+97.2% -- to one object named `lto.tmp`**, across 21,613 of its lines. **Not a single `ext/`, `Zend/`,
+`main/` or `sapi/` object name appears anywhere in it.** `LTO_FLAG` defaults to `-flto`
+(`Makefile:140`) and reaches the compile half, so `wasm-ld` merges every bitcode unit into one
+combined object before codegen and the per-extension provenance is gone before the map is written.
+
+So "one link answers what a dozen builds answered piecemeal" is **false here**. The instrument is
+real; LTO is what defeats it.
+
+What is left, in order of usefulness:
+
+- **Map a `nolto` build.** `src/rc/nolto.rc` already sets `LTO_FLAG=-O2`, so provenance survives.
+  The bytes then belong to a build that is NOT the shipping one, which makes it triage for
+  RELATIVE mass between extensions and nothing more.
+- **Do not** try to recover attribution from a shipping artifact. It is stripped at `-O2`, so
+  `strings` finds no symbol names and `twiggy`/`wasm-nm` have nothing to group by.
+- **Never** subtract a map figure from a gzip budget: the map is **raw** bytes, and `-O3` already
+  proved raw and gzipped move in opposite directions here.
 
 ## Which numbers here are trustworthy
 

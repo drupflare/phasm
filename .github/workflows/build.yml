@@ -410,12 +410,21 @@ jobs:
           cat /tmp/body.md
           ls -l staged/dist
 
-      - name: Create the Prerelease
+      - name: Create the Prerelease as a Draft
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.plan.outputs.release_tag }}
           name: phasm ${{ needs.plan.outputs.release_tag }}
           body_path: /tmp/body.md
-          draft: false
+          draft: true
           prerelease: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
           files: staged/dist/*
+      - name: Publish the Draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit '${{ needs.plan.outputs.release_tag }}' \
+            --repo '${{ github.repository }}' --draft=false
+          gh release view '${{ needs.plan.outputs.release_tag }}' \
+            --repo '${{ github.repository }}' --json assets \
+            --jq '"assets uploaded: \(.assets | length)"'
