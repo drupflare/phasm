@@ -1,0 +1,33 @@
+{
+	"name": "@drupflare/phasm",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Tooling only. The published artifacts are the wasm builds attached to GitHub Releases.",
+	"scripts": {
+		"prettier": "prettier --write .",
+		"prettier:check": "prettier --check .",
+		"lint": "bash tools/lint-shell.sh",
+		"test": "bash tools/test-patch-verify.sh",
+		"lint:shellcheck": "find src tools -name '*.sh' -print0 | xargs -0 shellcheck",
+		"lint:md": "markdownlint-cli2 \"**/*.md\" \"!node_modules\"",
+		"lint:c": "clang-format --style=file --dry-run --Werror src/probes/*.c",
+		"format:c": "clang-format --style=file -i src/probes/*.c",
+		"inspect": "bash src/inspect-build.sh",
+		"prepare": "husky"
+	},
+	"devDependencies": {
+		"husky": "^9.1.7",
+		"lint-staged": "^17.3.0",
+		"markdownlint-cli2": "^0.23.2",
+		"prettier": "^3.9.6",
+		"prettier-plugin-sh": "^0.19.0"
+	},
+	"lint-staged": {
+		"*.{md,json,yml}": "prettier --write",
+		"*.sh": [
+			"prettier --write",
+			"bash -n"
+		],
+		"*.{c,h,cpp,hpp,cc}": "clang-format --style=file -i"
+	}
+}
