@@ -7,7 +7,7 @@
 # is assigned inside the recipe and cannot be set from here; LTO_FLAG can.
 #
 # THE CAVEAT this carries: Makefile:404-405 also interpolate ${LTO_FLAG} into EXTRA_CFLAGS and
-# EXTRA_CXXFLAGS, so every compile receives `-Wl,-mllvm,-mergefunc` too and clang will warn
+# EXTRA_CXXFLAGS, so every compile receives the `-Wl,` form too and clang warns
 # "argument unused during compilation" on each one. Harmless and loud. There is no rc-reachable
 # variable that lands on the link alone.
 PHP_VERSION=8.5
@@ -17,7 +17,7 @@ ASYNCIFY=0
 OPTIMIZE=2
 INITIAL_MEMORY=96MB
 
-LTO_FLAG=-flto -Wl,-mllvm,-mergefunc
+LTO_FLAG=-flto -Wl,-mllvm,-enable-merge-functions
 
 WITH_VRZNO=1
 WITH_LIBXML=static
