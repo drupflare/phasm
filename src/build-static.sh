@@ -35,6 +35,23 @@ in_builder() {
 		-w /src emscripten-builder bash -lc "$*"
 }
 
+# setjmp.h is the canary rather than an arbitrary header: it is the one PHP 8.4+ needs at CONFIGURE
+# time, so a tree that passes this cannot fail that way. Emscripten reinstalls its own headers when
+# the stamp is gone, which is a supported operation and adds only files.
+sysroot_ok() {
+	in_builder 'printf "#include <setjmp.h>\nint main(void){return 0;}\n" > /tmp/preflight.c && emcc -c /tmp/preflight.c -o /tmp/preflight.o' > /dev/null 2>&1
+}
+if ! sysroot_ok; then
+	echo "emsdk sysroot cannot compile #include <setjmp.h>; reinstalling its headers"
+	in_builder 'rm -f /emsdk/upstream/emscripten/cache/sysroot_install.stamp'
+	sysroot_ok || {
+		echo "emsdk sysroot still cannot compile <setjmp.h> after a header reinstall" >&2
+		echo "  the mounted /tmp/emsdk-cache is damaged beyond a header reinstall; not building" >&2
+		exit 1
+	}
+	echo "emsdk sysroot headers reinstalled"
+fi
+
 # Two local patches are required and are applied to a copy of the Makefile:
 #
 # 1. PHP_CONFIGURE_DEPS is empty when every extension is static, so
