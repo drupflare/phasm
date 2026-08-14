@@ -465,3 +465,80 @@ jobs:
           gh release view '${{ needs.plan.outputs.release_tag }}' \
             --repo '${{ github.repository }}' --json assets \
             --jq '"assets uploaded: \(.assets | length)"'
+
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [plan, publish]
+
+    permissions:
+      contents: read
+      actions: read
+
+    env:
+      CONSUMER_REPO: drupflare/worker
+      CONSUMER_WORKFLOW: interpreter.yml
+      CONSUMER_VARIANTS: control85
+      DISPATCH_EVENT: phasm-interpreter-published
+      RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Notify the Consumer of Each Published Interpreter
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CONSUMER_TOKEN: ${{ secrets.PHASM_TOKEN }}
+        run: |
+          if [ -z "$CONSUMER_TOKEN" ]; then
+            echo "::error::PHASM_TOKEN is unset, so $CONSUMER_REPO cannot be notified" >&2
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/artifacts?per_page=100" \
+            > /tmp/artifacts.json
+
+          notified=0
+          for variant in $CONSUMER_VARIANTS; do
+            rc="src/rc/${variant}.rc"
+            if [ ! -f "$rc" ]; then
+              echo "::warning::$variant has no rc in this repository; not notifying"
+              continue
+            fi
+            php_version="$(grep -m1 '^PHP_VERSION=' "$rc" | cut -d= -f2)"
+            if [ -z "$php_version" ]; then
+              echo "::warning::$rc declares no PHP_VERSION; not notifying"
+              continue
+            fi
+            artifact_id="$(jq -r --arg n "phasm-${variant}-${GITHUB_SHA}" \
+              '[.artifacts[] | select(.name == $n)] | .[0].id // empty' /tmp/artifacts.json)"
+            if [ -z "$artifact_id" ]; then
+              echo "::warning::this run published no phasm-${variant}-${GITHUB_SHA}; not notifying"
+              continue
+            fi
+
+            jq -nc --arg e "$DISPATCH_EVENT" --arg v "$variant" --arg p "$php_version" \
+              --arg a "$artifact_id" --arg r "$GITHUB_RUN_ID" --arg c "$GITHUB_SHA" \
+              --arg t "$RELEASE_TAG" \
+              '{event_type: $e, client_payload: {variant: $v, php_version: $p, artifact_id: $a,
+                run_id: $r, commit: $c, tag: $t}}' > /tmp/dispatch.json
+
+            if GH_TOKEN="$CONSUMER_TOKEN" gh api --method POST \
+              "repos/${CONSUMER_REPO}/dispatches" --input /tmp/dispatch.json; then
+              echo "repository_dispatch accepted: $variant php$php_version artifact $artifact_id"
+            else
+              echo "::warning::repository_dispatch was refused; PHASM_TOKEN needs Contents: write"
+              GH_TOKEN="$CONSUMER_TOKEN" gh workflow run "$CONSUMER_WORKFLOW" \
+                --repo "$CONSUMER_REPO" \
+                -f variant="$variant" \
+                -f php_version="$php_version" \
+                -f artifact_id="$artifact_id"
+              echo "workflow_dispatch accepted: $variant php$php_version artifact $artifact_id"
+            fi
+            notified=$((notified + 1))
+          done
+
+          if [ "$notified" -eq 0 ]; then
+            echo "::error::no consumed variant was notified; $CONSUMER_REPO stays on its pin" >&2
+            exit 1
+          fi
+          echo "notified $CONSUMER_REPO about $notified interpreter(s)"
