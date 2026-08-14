@@ -78,7 +78,7 @@ jobs:
             sudo apt-get install -y shellcheck
           fi
           shellcheck --version
-          find src tools -name '*.sh' -print0 | xargs -0 shellcheck
+          find src tools -name '*.sh' -print0 | xargs -0 shellcheck -x
       - name: Check C Formatting
         run: |
           pip install 'clang-tools>=1.2.0'
@@ -216,6 +216,15 @@ jobs:
           fi
           echo "confirmed unpatched, which is what this variant asked for"
 
+      - name: Restore the Emscripten Sysroot
+        id: emsdk-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: /tmp/emsdk-cache
+          key: emsdk-${{ runner.os }}-${{ hashFiles('src/pin-builder-image.sh') }}-${{ matrix.variant }}
+          restore-keys: |
+            emsdk-${{ runner.os }}-${{ hashFiles('src/pin-builder-image.sh') }}-
+
       - name: Fetch the Libraries php-wasm Does Not
         run: |
           ICONV=""
@@ -231,6 +240,13 @@ jobs:
             echo "MAKE_EXTRA=$MAKE_EXTRA"
           fi
           JOBS="$(nproc)" bash src/build-variant.sh "${{ matrix.variant }}" "$PHP_WASM_DIR"
+
+      - name: Save the Emscripten Sysroot
+        if: ${{ !cancelled() && steps.emsdk-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v4
+        with:
+          path: /tmp/emsdk-cache
+          key: ${{ steps.emsdk-cache.outputs.cache-primary-key }}
 
       - name: Inspect and Assert the Artifact
         run: |
