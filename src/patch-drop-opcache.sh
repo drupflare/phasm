@@ -79,25 +79,36 @@ if [ -f "$CONFIG_H" ] && grep -qE "^#define ZTS 1" "$CONFIG_H"; then
       and dropping opcache needs a stub this patch does not provide"
 fi
 
-# The edit MUST run INSIDE the builder container. php-src is created there, so on a
-# Linux runner it is owned by the container's uid and the host can neither create a
-# sibling nor truncate the file -- `awk > .new` and `open(path, "w")` both failed in
-# CI with Permission denied. Docker Desktop on macOS maps the host user, which is why
-# both passed locally: the local tree is host-owned and cannot reproduce the failure.
-# src/build-static.sh routes its own edits this way for the same reason.
+# The WRITE must happen inside the builder container. php-src is created there, so
+# on a Linux runner it is owned by the container's uid and the host can neither
+# create a sibling nor truncate the file. Docker Desktop on macOS maps the host
+# user, which is why two earlier host-side versions passed locally and failed in CI.
 #
-# GNU sed inside the container: `i` inserts the marker, then the registration is
-# commented. A temp file in that directory is fine because the container owns it.
+# The host READS and computes (reads are permitted), then `docker compose run -T`
+# pipes the result in and the container writes it. That keeps the awk program out of
+# the bash -> docker -> bash -lc quoting layers entirely.
+#
+# src/drop-opcache.awk comments the WHOLE PHP_NEW_EXTENSION invocation by paren
+# balance. Commenting only its first line left the source list and `[yes])` as bare
+# m4 and configure died with "syntax error near unexpected token ')'".
+NEW_M4="$(awk -f "$(dirname "$0")/drop-opcache.awk" "$M4")" || fail "the awk edit failed; see its message above"
+[ -n "$NEW_M4" ] || fail "the awk edit produced nothing"
+
+# The failure that cost a CI slot: commenting part of an m4 invocation left a
+# dangling `)` and configure died with "syntax error near unexpected token ')'"
+# 49,000 lines later. Assert the LIVE lines balance before writing anything.
+bal="$(printf '%s\n' "$NEW_M4" | grep -vE "^[[:space:]]*dnl" \
+	| awk '{ o += gsub(/\(/, "("); c += gsub(/\)/, ")") } END { print o - c }')"
+[ "$bal" = "0" ] || fail "the edit leaves the live m4 paren balance at $bal, not 0;
+      configure would fail with a syntax error far from here"
+
+REL="third_party/php${PHP_VERSION}-src/ext/opcache/config.m4"
 (
 	cd "$CHECKOUT" || exit 1
-	docker compose -p phpwasm run -T --rm -e OUTER_UID="$(id -u)" -w /src \
-		emscripten-builder bash -lc "
-			set -e
-			f=/src/third_party/php${PHP_VERSION}-src/ext/opcache/config.m4
-			sed -i -E '/^[[:space:]]*PHP_NEW_EXTENSION\(\[?opcache/i dnl PHASM: opcache extension removed, see src/patch-drop-opcache.sh' \"\$f\"
-			sed -i -E 's/^([[:space:]]*)PHP_NEW_EXTENSION/\1dnl PHP_NEW_EXTENSION/' \"\$f\"
-		"
-) || fail "the in-container edit failed; see the docker output above"
+	printf '%s\n' "$NEW_M4" | docker compose -p phpwasm run -T --rm \
+		-e OUTER_UID="$(id -u)" -w /src \
+		emscripten-builder bash -lc "cat > /src/$REL"
+) || fail "the in-container write failed; see the docker output above"
 
 patched || fail "the marker was not written; refusing to report success"
 still="$(ext_line || true)"
