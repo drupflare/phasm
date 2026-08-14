@@ -1,14 +1,19 @@
-# The FLOOR: PHP 8.5 with only what Drupal cannot render without.
+# control85.rc with every extension this project has PROVEN it can substitute or
+# does not reach, so the pair prices the whole substitution programme in one run.
 #
-# ext-dom is required on the anonymous render path -- the filter module's
-# FilterHtml/FilterAlign/FilterCaption all reach Html::load(), which calls
-# DOMDocument::loadHTML(), libxml2's parser. So dom plus libxml2 stay, and vrzno
-# stays because it is the PHP-to-JS bridge every Host:: call goes through.
+# Dropped: yaml (Symfony's pure-PHP parser is already in vendor), zlib (fflate is
+# already a worker dependency and workerd has CompressionStream), simplexml and xml
+# (neither is on the anonymous render path; libxml2 stays for dom regardless).
 #
-# Everything else is off, including opcache, session, filter and tokenizer. This
-# is NOT a shippable configuration; it exists to measure how much of the 3,145,728
-# ceiling is left once the unavoidable extensions are in, which bounds the search
-# every other variant is negotiating inside.
+# KEPT, and this is the correction that cost a CI slot: session, filter, tokenizer
+# and ctype stay. An earlier revision zeroed everything but vrzno/dom/libxml and the
+# link failed with `undefined symbol: ps_globals` -- ext/session's globals are
+# referenced unconditionally, so WITH_SESSION=0 does not link. All four are also in
+# core's own composer.json requirement list, so a floor without them could never
+# ship even if it linked.
+#
+# pdo is NOT dropped here: it needs the userland PDO-constants shim to land first,
+# since core's sqlite Connection references PDO::FETCH_ASSOC and rom extends it.
 PHP_VERSION=8.5
 
 MAIN_MODULE=0
@@ -24,10 +29,10 @@ WITH_XML=0
 WITH_YAML=0
 WITH_ZLIB=0
 
-WITH_CTYPE=0
-WITH_FILTER=0
-WITH_SESSION=0
-WITH_TOKENIZER=0
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
 
 WITH_BCMATH=0
 WITH_CALENDAR=0
