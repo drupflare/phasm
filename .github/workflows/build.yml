@@ -233,7 +233,7 @@ jobs:
 
       - name: Restore the Emscripten Sysroot
         id: emsdk-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: /tmp/emsdk-cache
           key: emsdk-${{ runner.os }}-${{ hashFiles('src/pin-builder-image.sh') }}-${{ matrix.variant }}
@@ -281,7 +281,7 @@ jobs:
 
       - name: Save the Emscripten Sysroot
         if: ${{ !cancelled() && steps.emsdk-cache.outputs.cache-hit != 'true' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: /tmp/emsdk-cache
           key: ${{ steps.emsdk-cache.outputs.cache-primary-key }}
