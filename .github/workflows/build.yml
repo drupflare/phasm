@@ -217,6 +217,15 @@ jobs:
           npm install --no-audit --no-fund
           echo "packages visible to the Makefile: $(npm ls -p | wc -l)"
 
+      - name: Make libiconv Position-Independent
+        run: |
+          if grep -qE '^WITH_ICONV=(1|static|shared|dynamic)' "$RC"; then
+            bash src/patch-iconv-pic.sh "$PHP_WASM_DIR"
+            bash src/patch-iconv-pic.sh "$PHP_WASM_DIR" --verify
+          else
+            echo "rc does not build iconv, leaving php-wasm-iconv alone"
+          fi
+
       - name: Stage the RC
         run: |
           cp "$RC" "$PHP_WASM_DIR/.php-wasm-rc"
