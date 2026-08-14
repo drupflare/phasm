@@ -12,11 +12,9 @@ insert_final_newline = true
 indent_style = space
 indent_size = 2
 
-# rc files are `make` variable assignments, read with -include
 [*.rc]
 indent_style = space
 
-# matches TabWidth in .clang-format, so editors and the formatter agree
 [*.c]
 indent_size = 4
 
