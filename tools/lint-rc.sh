@@ -60,6 +60,32 @@ for rc in "$ROOT"/src/rc/*.rc; do
 			fi
 		fi
 	fi
+
+	link_flags="$(grep -vE '^[[:space:]]*#' "$rc" | grep -oE -- '-Wl,[^ ]+' | tr '\n' ' ' || true)"
+	if [ -n "$link_flags" ]; then
+		if [ -n "${SKIP_LINK_CHECK:-}" ]; then
+			echo "note  $name carries $link_flags; link check skipped by SKIP_LINK_CHECK"
+		elif ! docker info > /dev/null 2>&1; then
+			echo "note  $name carries $link_flags; no docker, so the link check could not run"
+		else
+			link_out=""
+			if ! link_out="$(
+				cd "$CHECKOUT" && docker compose -p phpwasm run -T --rm emscripten-builder bash -lc \
+					"cd /tmp && printf 'int main(void){return 0;}' > lintrc.c && \
+					 /emsdk/upstream/emscripten/emcc -flto -O2 $link_flags lintrc.c -o lintrc.mjs" 2>&1
+			)" || echo "$link_out" | grep -qiE "unknown command line argument|unknown -z|unsupported"; then
+				echo "FAIL  $name rejects its own link flags: $link_flags"
+				echo "$link_out" | grep -iE "unknown|error|did you mean" | head -4 | sed 's/^/      /'
+				failed=$((failed + 1))
+				checked=$((checked + 1))
+				continue
+			fi
+			echo "ok    $name (PHP $php_version) link flags accepted: $link_flags"
+			checked=$((checked + 1))
+			continue
+		fi
+	fi
+
 	echo "ok    $name (PHP $php_version)"
 	checked=$((checked + 1))
 done
