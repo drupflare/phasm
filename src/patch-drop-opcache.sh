@@ -79,26 +79,26 @@ if [ -f "$CONFIG_H" ] && grep -qE "^#define ZTS 1" "$CONFIG_H"; then
       and dropping opcache needs a stub this patch does not provide"
 fi
 
-# Rewrite IN PLACE. php-src is created inside the builder container, so the host
-# can write an existing file but cannot create a sibling in that directory: an
-# earlier revision used `awk > config.m4.new` and CI failed with Permission denied.
-python3 -c "
-import sys
-path = sys.argv[1]
-lines = open(path).readlines()
-out = []
-done = False
-for line in lines:
-    st = line.lstrip()
-    if not done and st.startswith('PHP_NEW_EXTENSION([opcache'):
-        out.append('dnl PHASM: opcache extension removed, see src/patch-drop-opcache.sh' + chr(10))
-        out.append('dnl ' + line)
-        done = True
-        continue
-    out.append(line)
-assert done, 'PHP_NEW_EXTENSION(opcache) vanished between the check and the rewrite'
-open(path, 'w').writelines(out)
-" "$M4"
+# The edit MUST run INSIDE the builder container. php-src is created there, so on a
+# Linux runner it is owned by the container's uid and the host can neither create a
+# sibling nor truncate the file -- `awk > .new` and `open(path, "w")` both failed in
+# CI with Permission denied. Docker Desktop on macOS maps the host user, which is why
+# both passed locally: the local tree is host-owned and cannot reproduce the failure.
+# src/build-static.sh routes its own edits this way for the same reason.
+#
+# GNU sed inside the container: `i` inserts the marker, then the registration is
+# commented. A temp file in that directory is fine because the container owns it.
+(
+	cd "$CHECKOUT" || exit 1
+	docker compose -p phpwasm run -T --rm -e OUTER_UID="$(id -u)" -w /src \
+		emscripten-builder bash -lc "
+			set -e
+			f=/src/third_party/php${PHP_VERSION}-src/ext/opcache/config.m4
+			sed -i -E '/^[[:space:]]*PHP_NEW_EXTENSION\(\[?opcache/i dnl PHASM: opcache extension removed, see src/patch-drop-opcache.sh' \"\$f\"
+			sed -i -E 's/^([[:space:]]*)PHP_NEW_EXTENSION/\1dnl PHP_NEW_EXTENSION/' \"\$f\"
+		"
+) || fail "the in-container edit failed; see the docker output above"
+
 patched || fail "the marker was not written; refusing to report success"
 still="$(ext_line || true)"
 [ -z "$still" ] || fail "PHP_NEW_EXTENSION(opcache) is still live at line $still after the edit"
