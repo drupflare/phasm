@@ -15,6 +15,10 @@ on:
         options:
           - all
           - control
+          - control84
+          - control85
+          - min85
+          - trim85
           - iconv
           - mbstring
           - nolto
