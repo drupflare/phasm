@@ -1,0 +1,34 @@
+---
+# Taken from ~/gmitch215/c-c++/cmdfx, with exactly three deviations, all recorded here.
+#
+# 1. tabs at 4, not spaces: the house default for every language in this workspace
+# 2. ColumnLimit 100, not 80: same
+# 3. SortIncludes off, not on: sjlj-jspi-probe.c includes <setjmp.h> ahead of the
+#    emscripten headers and nothing here can compile the probe to prove a reorder is safe
+BasedOnStyle: Microsoft
+IndentWidth: 4
+TabWidth: 4
+ColumnLimit: 100
+UseTab: Always
+IndentCaseLabels: true
+PointerAlignment: Left
+AllowShortBlocksOnASingleLine: Never
+AllowShortIfStatementsOnASingleLine: true
+AllowShortCaseExpressionOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: None
+AllowShortLambdasOnASingleLine: true
+AllowShortLoopsOnASingleLine: true
+EmptyLineAfterAccessModifier: Never
+IndentPPDirectives: BeforeHash
+AllowAllParametersOfDeclarationOnNextLine: true
+BraceWrapping:
+  AfterControlStatement: false
+  AfterFunction: false
+  AfterClass: false
+  AfterStruct: false
+  AfterCaseLabel: false
+  AfterExternBlock: false
+AlignAfterOpenBracket: BlockIndent
+SpaceAfterCStyleCast: true
+SortIncludes: Never
