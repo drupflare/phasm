@@ -73,7 +73,7 @@ a macro argument is what broke the opcache `config.m4` patch twice.
 
 ## 🔩 Variants
 
-Nine `.rc` files. Each is a complete configuration, not a diff, because the php-wasm
+Fourteen `.rc` files. Each is a complete configuration, not a diff, because the php-wasm
 `configured` stamp is a plain file target: **a differing `CONFIGURE_FLAGS` in an rc is
 silently ignored once that stamp exists**, so matching the tree's own `config.nice` is
 mandatory rather than cosmetic.
@@ -81,6 +81,8 @@ mandatory rather than cosmetic.
 | Variant      | What it is                                      | Note                                                                                              |
 | ------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------- |
 | `control`    | reproduces the shipping build                   | reconstructed from the `CONFIGURE_COMMAND` string PHP compiles into the binary                    |
+| `control84`  | `control` at PHP 8.4                            | the midpoint that separates version drift from the 8.5 `ext/uri` + `ext/lexbor` bulk              |
+| `control85`  | `control` at PHP 8.5                            | the version Drupal 12 requires; `ext/uri` and `ext/lexbor` cannot be turned off from an rc        |
 | `iconv`      | `control` plus the real iconv extension         | **measured and rejected**: +655,677 gzip, 386,808 OVER the free ceiling, and no `mb_substr()` fix |
 | `mbstring`   | `control` plus the real mbstring extension      | the actual `mb_substr()` fix, and the one that breaks the free-tier budget                        |
 | `nolto`      | `control` with LTO removed, `-O2` held constant | isolates what LTO is worth; see below                                                             |
@@ -89,6 +91,9 @@ mandatory rather than cosmetic.
 | `jspimb`     | `mbstring` plus JSPI                            | carries the mbstring fix and is over the free ceiling                                             |
 | `jspisjlj`   | `jspi` plus wasm SjLj                           | the variant that can actually suspend from inside PHP                                             |
 | `jspimbsjlj` | `jspimb` plus wasm SjLj                         | plain `-sJSPI` measured **broken** without it; see below                                          |
+| `min85`      | 8.5 with only `dom`, `libxml2` and `vrzno`      | not shippable; it bounds how much of the ceiling the unavoidable extensions leave                 |
+| `trim85`     | `control85` minus `yaml` and `zlib`             | needs the fflate bridge in the consumer before it can ship                                        |
+| `nopdo85`    | `control85` minus `ext-pdo`                     | needs `drupflare/rom`'s userland `PDO` in the deployed tree first                                 |
 
 **`iconv` is rejected.** `static-iconv` is **3,532,536 bytes** gzipped against `control`'s
 2,876,859: a cost of **655,677**, landing **386,808 over the 3,145,728 free ceiling**. That is
