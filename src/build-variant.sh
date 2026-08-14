@@ -33,24 +33,31 @@ compgen -G "$OUT/*.wasm" > /dev/null && {
 
 cp "$RC" "$SRC/.php-wasm-rc"
 
+PHP_VERSION="$(sed -n 's/^PHP_VERSION=\([0-9][0-9.]*\).*/\1/p' "$RC" | tail -1)"
+PHP_VERSION="${PHP_VERSION:-8.3}"
+export PHP_VERSION
+echo "building $VARIANT at PHP $PHP_VERSION"
+
 case "$VARIANT" in
 	vmswitch) VM_KIND=SWITCH ;;
 	vmgoto) VM_KIND=GOTO ;;
 	*) VM_KIND= ;;
 esac
 
-ZEND="$SRC/third_party/php8.3-src/Zend"
+PHP_SRC="$SRC/third_party/php${PHP_VERSION}-src"
+ZEND="$PHP_SRC/Zend"
 if [ -n "$VM_KIND" ]; then
 	echo "regenerating the VM as ZEND_VM_KIND_${VM_KIND} under php:8.3-cli"
-	docker run --rm -v "$SRC/third_party/php8.3-src:/w" -w /w/Zend php:8.3-cli \
+	docker run --rm -v "$PHP_SRC:/w" -w /w/Zend php:8.3-cli \
 		php zend_vm_gen.php --with-vm-kind="$VM_KIND"
 	grep -q "define ZEND_VM_KIND[[:space:]]*ZEND_VM_KIND_${VM_KIND}" "$ZEND/zend_vm_opcodes.h" \
 		|| {
 			echo "VM regeneration did not take; refusing to build"
 			exit 1
 		}
-else
-	# restore the shipped HYBRID/CALL headers in case a vm variant ran before
+elif [ "$PHP_VERSION" = 8.3 ] && [ -d "$ZEND" ]; then
+	# restore the shipped HYBRID/CALL headers in case a vm variant ran before; vmgen-pristine
+	# holds 8.3 headers, so it is only ever the right thing to copy into an 8.3 tree
 	if [ -f "$PRISTINE/zend_vm_execute.h" ]; then
 		cp "$PRISTINE/zend_vm_execute.h" "$PRISTINE/zend_vm_opcodes.h" "$ZEND/"
 	fi
