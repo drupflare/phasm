@@ -1,8 +1,13 @@
 # control.rc with LTO removed. php-wasm sets LTO_FLAG?=-flto at Makefile line
-# 140 and feeds it to EXTRA_CFLAGS, EXTRA_CXXFLAGS and EXTRA_LDFLAGS_PROGRAM, so
-# every build in vendor/ already has LTO. -O${OPTIMIZE} appears ONLY in the link
-# flags, so with LTO on, link-time is where the optimization happens; this
-# variant measures what LTO is already worth rather than adding it.
+# 140 and feeds it to EXTRA_CFLAGS (404), EXTRA_CXXFLAGS (405) and
+# EXTRA_LDFLAGS_PROGRAM (408), so every build in vendor/ already has LTO.
+#
+# LTO_FLAG carries -O2 here rather than being empty. -O${OPTIMIZE} reaches only
+# the LINK flags, so LTO_FLAG is the only optimization in the compile half:
+# emptying it compiles at -O0 and a function then exceeds Binaryen's
+# per-function locals cap, failing wasm-emscripten-finalize with
+# "parse exception: too many locals". Substituting -O2 holds the optimization
+# level constant and removes only LTO, which is what the variant is for.
 
 PHP_VERSION=8.3
 
@@ -10,7 +15,7 @@ MAIN_MODULE=0
 ASYNCIFY=0
 OPTIMIZE=2
 INITIAL_MEMORY=96MB
-LTO_FLAG=
+LTO_FLAG=-O2
 
 WITH_VRZNO=1
 WITH_LIBXML=static
