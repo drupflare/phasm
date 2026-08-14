@@ -1,0 +1,62 @@
+# Reproduces vendor/static-o2, the shipping build (cpubench 648 ms, 2,876,855
+# gzip total). Reconstructed from the CONFIGURE_COMMAND string that PHP compiles
+# into the binary, recoverable with:
+#   strings -a vendor/static-o2/php8.3-worker.mjs.wasm | grep -m1 -- "'--disable-all'"
+#
+# Verified: gmake prints exactly
+#  --enable-opcache --enable-vrzno --enable-dom --with-libxml --enable-simplexml
+#  --enable-xml --with-yaml=/src/lib --with-zlib --enable-ctype --enable-filter
+#  --enable-session --enable-tokenizer --disable-mbregex
+# which is byte-identical to the recovered tail of the shipping build's line.
+#
+# Note LTO_FLAG defaults to -flto in php-wasm's Makefile (line 140) and reaches
+# EXTRA_CFLAGS, EXTRA_CXXFLAGS and EXTRA_LDFLAGS_PROGRAM, so every build in
+# vendor/ is already an LTO build. Nothing here turns it on.
+
+PHP_VERSION=8.3
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=static
+WITH_XML=static
+WITH_YAML=static
+WITH_ZLIB=static
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_ICONV=0
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+# opcache is compiled in; file_cache_only is set at runtime from the worker ini
+CONFIGURE_FLAGS+= --enable-opcache

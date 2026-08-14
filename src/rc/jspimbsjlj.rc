@@ -1,0 +1,65 @@
+# jspimb.rc plus WASM SjLj. Needed because the plain -sJSPI build measured BROKEN:
+# emscripten marks fd_sync as an async import (_fd_sync.isAsync=true in the glue), so
+# -sJSPI turns PHP's own flush path into a SUSPENDING import, and pib_run's zend_try
+# puts an invoke_* JS frame under it - every pib_run died with
+# "SuspendError: trying to suspend JS frames", even <?php echo PHP_VERSION;.
+#
+# -sSUPPORT_LONGJMP=wasm is NOT a link-only switch: linking an LTO object compiled
+# without it while the link passes -mllvm -exception-model=wasm aborts wasm-ld with
+# "LLVM ERROR: Cannot select: ... catchret" (measured, src/build-sjlj-probe.sh's
+# ltolink case). So the compile half must be passed too, as a make command-line
+# variable, because Makefile:209 clears EXTRA_CFLAGS after the rc is included:
+#   MAKE_EXTRA='EXTRA_CFLAGS=-sSUPPORT_LONGJMP=wasm' OUT=... bash src/build-static.sh <src>
+
+PHP_VERSION=8.3
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=static
+WITH_XML=static
+WITH_YAML=static
+WITH_ZLIB=static
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_ICONV=0
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+CONFIGURE_FLAGS+= --enable-opcache
+CONFIGURE_FLAGS+= --enable-mbstring --disable-mbregex
+
+EXTRA_FLAGS+= -s JSPI=1
+EXTRA_FLAGS+= -s JSPI_EXPORTS=main,pib_init,pib_storage_init,pib_run,pib_exec,pib_refresh
+
+EXTRA_FLAGS+= -s SUPPORT_LONGJMP=wasm

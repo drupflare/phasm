@@ -1,0 +1,67 @@
+# control.rc plus the real iconv extension. WITH_ICONV=static adds
+#   CONFIGURE_FLAGS+= --with-iconv=/src/lib
+#   ARCHIVES+= lib/lib/libiconv.a      (libiconv 1.17, built under emscripten)
+#
+# DO NOT build this expecting it to fix mb_substr(). It does not. The claim that
+# "native iconv_substr substitutes rather than failing" is false:
+#   ext/iconv/iconv.c:642  _php_iconv_substr() calls _php_iconv_strlen() first
+#                          and returns its error verbatim
+#   ext/iconv/iconv.c:88   _php_iconv_strlen() maps EILSEQ to
+#                          PHP_ICONV_ERR_ILLEGAL_SEQ
+#   ext/iconv/iconv.c:1859 PHP_FUNCTION(iconv_substr) RETURN_FALSE on any error
+# so the real extension returns false on invalid UTF-8 exactly like the polyfill,
+# and (string) false is still ''. Confirmed against a real iconv extension
+# (PHP 8.5.7, ICONV_IMPL=libiconv 1.11) by calling
+# Symfony\Polyfill\Mbstring\Mbstring::mb_substr() directly: all five malformed
+# shapes still return '', with and without a //IGNORE suffix.
+#
+# Use mbstring.rc to close that bug. This rc is kept only for the secondary
+# effects (drops 61 polyfill-iconv files from the pack; changes mb_strlen's
+# fallback path).
+
+PHP_VERSION=8.3
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=static
+WITH_XML=static
+WITH_YAML=static
+WITH_ZLIB=static
+WITH_ICONV=static
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+CONFIGURE_FLAGS+= --enable-opcache

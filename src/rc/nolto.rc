@@ -1,0 +1,53 @@
+# control.rc with LTO removed. php-wasm sets LTO_FLAG?=-flto at Makefile line
+# 140 and feeds it to EXTRA_CFLAGS, EXTRA_CXXFLAGS and EXTRA_LDFLAGS_PROGRAM, so
+# every build in vendor/ already has LTO. -O${OPTIMIZE} appears ONLY in the link
+# flags, so with LTO on, link-time is where the optimization happens; this
+# variant measures what LTO is already worth rather than adding it.
+
+PHP_VERSION=8.3
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+LTO_FLAG=
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=static
+WITH_XML=static
+WITH_YAML=static
+WITH_ZLIB=static
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_ICONV=0
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+CONFIGURE_FLAGS+= --enable-opcache
