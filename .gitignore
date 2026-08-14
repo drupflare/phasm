@@ -1,0 +1,20 @@
+vendor/
+assets/
+*.wasm
+*.o
+*.a
+
+# a php-wasm checkout, if you keep one in the tree rather than in /tmp
+php-wasm/
+
+# bun
+node_modules/
+package-lock.json
+
+# logs and scratch
+*.log
+/tmp-*
+
+# editor and OS
+.idea/
+.DS_Store
