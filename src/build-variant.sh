@@ -39,7 +39,6 @@ export PHP_VERSION
 echo "building $VARIANT at PHP $PHP_VERSION"
 
 case "$VARIANT" in
-	vmswitch) VM_KIND=SWITCH ;;
 	vmgoto) VM_KIND=GOTO ;;
 	*) VM_KIND= ;;
 esac

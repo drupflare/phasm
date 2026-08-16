@@ -10,7 +10,7 @@
 # the whole mechanism is dead code. This patch raises it from a countdown.
 #
 # WHERE THE POLL SITES ARE, measured in this tree, ZEND_VM_KIND_CALL with no
-# global registers (wasm32 never gets HAVE_GCC_GLOBAL_REGS, see vmswitch.rc):
+# global registers (wasm32 never gets HAVE_GCC_GLOBAL_REGS):
 #   Zend/zend_execute.c:5342   ZEND_VM_SET_OPCODE() -- EVERY branch/jump handler,
 #                              which is what makes loop back-edges poll
 #   Zend/zend_vm_execute.h     ZEND_VM_LOOP_INTERRUPT_CHECK() at execute_ex entry

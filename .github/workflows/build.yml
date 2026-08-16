@@ -22,7 +22,6 @@ on:
           - noopcache85
           - mbstring
           - nolto
-          - vmswitch
           - jspi
           - jspimb
           - jspisjlj

@@ -87,7 +87,6 @@ mandatory rather than cosmetic.
 | `iconv`       | `control` plus the real iconv extension         | **measured and rejected**: +655,677 gzip, 386,808 OVER the free ceiling, and no `mb_substr()` fix  |
 | `mbstring`    | `control` plus the real mbstring extension      | the actual `mb_substr()` fix, and the one that breaks the free-tier budget                         |
 | `nolto`       | `control` with LTO removed, `-O2` held constant | isolates what LTO is worth; see below                                                              |
-| `vmswitch`    | `control` against a SWITCH-dispatch Zend VM     | needs `zend_vm_gen.php --with-vm-kind=SWITCH`, which `build-variant.sh` runs for it                |
 | `jspi`        | `control` plus JSPI plus the VM interrupt patch | the shippable shape: no mbstring, so it fits                                                       |
 | `jspimb`      | `mbstring` plus JSPI                            | carries the mbstring fix and is over the free ceiling                                              |
 | `jspisjlj`    | `jspi` plus wasm SjLj                           | the variant that can actually suspend from inside PHP                                              |
