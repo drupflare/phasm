@@ -4,7 +4,7 @@
 [![Prettier](https://github.com/drupflare/phasm/actions/workflows/prettier.yml/badge.svg)](https://github.com/drupflare/phasm/actions/workflows/prettier.yml)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**The build that produces a PHP 8.3 WebAssembly binary a real CMS can run on Cloudflare
+**The build that produces a PHP WebAssembly binary a real CMS can run on Cloudflare
 Workers.** workerd forbids the runtime wasm codegen emscripten's dynamic linker needs, so no
 shipped php-wasm build works there and every extension has to be statically linked.
 
