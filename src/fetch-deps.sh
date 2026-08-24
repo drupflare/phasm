@@ -101,6 +101,25 @@ in_builder() {
 
 have_lib() { [ -f "$CHECKOUT/lib/lib/$1" ]; }
 
+# Builds the SIDE MODULE php-wasm's own makefiles would build, with the ABI flag they omit.
+#
+# `packages/php-wasm-{zlib,yaml,libxml}/static.mak` each turn their `.a` into a `.so` through their
+# OWN `docker compose run`, so neither this script's EMCC_CFLAGS nor the environment reaches them --
+# two of the three even pass `-e EMCC_CFLAGS=...` explicitly and clobber it. On wasm32 that is
+# harmless; on wasm64 wasm-ld refuses with `must specify -mwasm64 to process wasm64 object files`,
+# measured on run 32687463470.
+#
+# Building it here first means make finds the target present and newer than its prerequisite and
+# skips the recipe. A stub would also satisfy the timestamp and is not what this does: with
+# MAIN_MODULE=0 nothing links these, but leaving a real artifact means a future dylink build finds
+# a correct one rather than an empty file.
+side_module() {
+	local lib="$1" extra="$2"
+	[ "$MEMORY64" = 1 ] || return 0
+	echo "  pre-building ${lib}.so as wasm64, which php-wasm's own recipe would not"
+	in_builder /src "emcc -shared -o ${PREFIX}lib/${lib}.so -fPIC ${extra} -sSIDE_MODULE=1 -O2 -sMEMORY64=1 -Wl,--whole-archive ${PREFIX}lib/${lib}.a"
+}
+
 # A prefix built for the other ABI is worse than an empty one: have_lib() would answer yes and the
 # mismatch surfaces at the final link rather than here. Wipe it, and the dependency source trees
 # with it, since their configure output is ABI-specific too.
@@ -160,6 +179,7 @@ else
 		emconfigure ./configure $LIBXML2_CONFIGURE $DEP_HOST --prefix=$PREFIX --cache-file=$CACHE
 		emmake make -j\"\$(nproc)\" && emmake make install
 	"
+	side_module libxml2 -flto
 fi
 
 # --- libyaml, for the yaml extension -----------------------------------------
@@ -174,6 +194,7 @@ else
 		emconfigure ./configure $LIBYAML_CONFIGURE $DEP_HOST --prefix=$PREFIX --cache-file=$CACHE
 		emmake make -j\"\$(nproc)\" && emmake make install
 	"
+	side_module libyaml -flto
 fi
 
 # --- zlib, which has its own configure rather than autotools ------------------
@@ -190,6 +211,7 @@ else
 		emconfigure ./configure $ZLIB_CONFIGURE --prefix=$PREFIX
 		emmake make -j\"\$(nproc)\" && emmake make install
 	"
+	side_module libz ""
 fi
 
 # --- libiconv, ONLY for the iconv variant ------------------------------------
