@@ -26,6 +26,7 @@ on:
           - jspimb
           - jspisjlj
           - jspimbsjlj
+          - wasm64
       php_wasm_ref:
         description: 'seanmorris/php-wasm git ref (tag, branch or SHA). Recorded in the release notes'
         type: string
@@ -160,8 +161,14 @@ jobs:
 
       - name: Check the RC Exists
         run: |
+          # a .rc.pending variant is invisible to the push matrix but buildable by dispatch, which
+          # is the only way an unproven arm gets its first green run without failing every push
           RC="src/rc/${{ matrix.variant }}.rc"
-          test -f "$RC" || { echo "no rc file at $RC"; exit 1; }
+          if [ ! -f "$RC" ] && [ -f "$RC.pending" ]; then
+            echo "::warning::building the PENDING rc $RC.pending; rename it to $RC once it links"
+            RC="$RC.pending"
+          fi
+          test -f "$RC" || { echo "no rc file at src/rc/${{ matrix.variant }}.rc"; exit 1; }
           echo "RC=$RC" >> "$GITHUB_ENV"
           echo "PHP_VERSION=$(grep -m1 '^PHP_VERSION=' "$RC" | cut -d= -f2)" >> "$GITHUB_ENV"
 
@@ -279,6 +286,11 @@ jobs:
           if grep -qE '^[[:space:]]*WITH_ICONV=[^0]' "$RC" || grep -q -- '--with-iconv' "$RC"; then
             ICONV="--with-iconv"
           fi
+          # every library has to carry the same pointer width as php-src or wasm-ld rejects the
+          # final link, and the emsdk cache is keyed per variant so the ABIs cannot collide
+          if grep -q 'MEMORY64=1' "$RC"; then
+            export MEMORY64=1
+          fi
           bash src/fetch-deps.sh "$PHP_WASM_DIR" $ICONV
 
       - name: Enlarge Swap for the LTO Link
@@ -296,10 +308,8 @@ jobs:
 
       - name: Build the Variant
         run: |
-          if grep -q 'SUPPORT_LONGJMP=wasm' "$RC"; then
-            export MAKE_EXTRA='EXTRA_CFLAGS=-sSUPPORT_LONGJMP=wasm'
-            echo "MAKE_EXTRA=$MAKE_EXTRA"
-          fi
+          # the compile-half flags used to be derived here, which meant a local build of the same
+          # variant silently compiled without them; build-variant.sh owns that now
           JOBS="$(nproc)" bash src/build-variant.sh "${{ matrix.variant }}" "$PHP_WASM_DIR"
 
       - name: Report Whether the Kernel Killed the Link

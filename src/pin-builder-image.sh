@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Pins the emscripten builder image to a content digest instead of a floating tag.
 #
-# WHY THIS EXISTS. php-wasm's docker-compose.yml names the image as
+# php-wasm's docker-compose.yml names the image as
 # `seanmorris/php-emscripten-builder` with no tag, so every build resolves `:latest` at the
 # moment it runs. That is the one input a release body cannot record honestly: the rc hash and
 # the php-wasm commit are pinned, the compiler is not, so two builds of "the same inputs" can
 # differ by a whole emsdk. Recording the digest after the fact identifies a binary; pinning it
 # before the fact is what makes the identity a choice.
 #
-# HOW IT PINS WITHOUT EDITING php-wasm. The checkout is fetched, not vendored, so its compose
-# file is not ours to change. Pulling BY DIGEST and then tagging that image `:latest` locally
+# How it pins without editing php-wasm: the checkout is fetched, not vendored, so its compose
+# file is not ours to change. Pulling by digest and then tagging that image `:latest` locally
 # leaves compose resolving the name it already uses to exactly the image named here - compose's
 # default pull policy is "missing", so a tag that already exists locally is never re-resolved.
 #

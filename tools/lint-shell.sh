@@ -106,8 +106,10 @@ for probe in src/probes/*.c; do
 	fi
 done
 
-# every rc must name a PHP version, or the Makefile silently builds the default
-for rc in src/rc/*.rc; do
+# every rc must name a PHP version, or the Makefile silently builds the default. .rc.pending is
+# included because it is dispatch-buildable, so an unpinned one reaches a real build
+for rc in src/rc/*.rc src/rc/*.rc.pending; do
+	[ -f "$rc" ] || continue
 	count=$((count + 1))
 	if grep -qE '^PHP_VERSION=' "$rc"; then
 		echo "  ok   $rc (PHP_VERSION pinned)"

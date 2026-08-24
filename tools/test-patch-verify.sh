@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Drives patch-vm-interrupt.sh through apply, --verify and --revert over a synthetic tree.
 #
-# WHY A SYNTHETIC TREE AND NOT A REAL ONE. The real target is
+# The real target is
 # `third_party/php8.3-src/Zend/zend_execute.c`, which arrives from a `make patched` clone that
 # needs Docker and a php-src checkout. What this script tests is not php-src: it is the
 # script's own state machine -- does apply reach both poll macros, does --verify distinguish
-# patched from unpatched from PARTIALLY patched, does --revert leave no residue. All of that is
+# patched from unpatched from partially patched, does --revert leave no residue. All of that is
 # a property of the text transformation, so a fixture carrying the two anchor macros exercises
 # it exactly and runs in a second with no toolchain at all.
 #
-# WHAT IT DOES NOT PROVE: that the patched C compiles, or that the exports reach the binary.
+# What it does not prove: that the patched C compiles, or that the exports reach the binary.
 # `inspect-build.sh --expect-slice-exports` is the check for that, and it needs a real build.
 #
 # Usage:

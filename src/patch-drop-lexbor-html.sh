@@ -9,29 +9,29 @@
 # older, and a search of Drupal 11.4.5 finds ZERO Dom\* uses in core with only
 # four harmless ones in symfony/var-dumper.
 #
-# WHAT STAYS, and why the split works
+# What stays, and why the split works:
 # lexbor is modular by directory and the two consumers barely overlap:
 #   ext/dom's HTMLDocument needs html + css  (removable)
-#   ext/uri's WHATWG parser needs url + core + punycode + unicode + ENCODING
+#   ext/uri's WHATWG parser needs url + core + punycode + unicode + encoding
 #
-# ENCODING CANNOT BE REMOVED, and an earlier revision of this script deleted it.
+# Encoding cannot be removed, and an earlier revision of this script deleted it.
 # Symbol analysis over the built bitcode: url/url.o needs 7 real functions from
 # encoding (lxb_encoding_res_map, the utf-8 decode/encode length and single
 # helpers, encode_iso_2022_jp_eof_single), and so do punycode.o, idna.o and
 # unicode.o. Those in turn need 88 codepage-table symbols from multi.c, single.c,
 # range.c and encoding.c. url.c is mandatory because main/streams/streams.c calls
-# php_uri_get_parser() unconditionally. So all 7 encoding files STAY, and the
+# php_uri_get_parser() unconditionally. So all 7 encoding files stay, and the
 # 825,364-byte multi.o stays with them.
 #
 # Measured bitcode actually removable: html 928,468 + css 251,284 + the four
 # ext/dom objects (html_document 66,592, html5_parser 21,028,
 # inner_outer_html_mixin 28,628, parentnode/css_selectors 10,444) = 1,306,444.
-# The 2,247,060 an earlier revision claimed counted encoding and is NOT reachable.
+# The 2,247,060 an earlier revision claimed counted encoding and is not reachable.
 #
-# BITCODE IS NOT GZIP. 1,306,444 is the TARGET, never a saving; the ratio runs
+# Bitcode is not gzip. 1,306,444 is the target, never a saving; the ratio runs
 # the unhelpful way and only a built-and-gzipped binary settles it.
 #
-# THIS SCRIPT IS INCOMPLETE ON PURPOSE, and refuses rather than producing a tree
+# It is incomplete, and refuses rather than producing a tree
 # that cannot link. Removing lexbor/html plus the four ext/dom sources leaves 21
 # symbols undefined: 16 wanted by dom/php_dom.o's property and method handler
 # tables (dom_html_document_body_read/write, encoding_write, head_read,
@@ -40,18 +40,17 @@
 # zim_Dom_HTMLDocument_* entries), 1 by dom/element.o (dom_parse_fragment), and 4
 # more once css goes (dom_element_matches, dom_element_closest,
 # dom_parent_node_query_selector, query_selector_all). Those live in php_dom.c,
-# its arginfo header and element.c, so the real patch is a SOURCE edit there, not
+# its arginfo header and element.c, so the real patch is a source edit there, not
 # a build-list deletion.
 #
 # usage:
 #   src/patch-drop-lexbor-html.sh <php-wasm-checkout>
 #   src/patch-drop-lexbor-html.sh <php-wasm-checkout> --verify
 #
-# Keyed on the patched SHAPE, never on a marker comment, and FATAL when the
-# shape has moved -- a patch that silently skips is how this project shipped
-# eleven variants missing seven extensions.
+# Keyed on the patched shape, never on a marker comment, and fatal when the shape has moved --
+# a patch that silently skips is how this project shipped eleven variants missing seven extensions.
 #
-# WHEN THE apply PATH IS IMPLEMENTED, the `sed -i.orig` below must be replaced by
+# When the apply path is implemented, the `sed -i.orig` below must be replaced by
 # an in-place rewrite. php-src is container-created, so the host cannot create a
 # sibling in that directory; `sed -i.orig` fails with Permission denied exactly as
 # patch-drop-opcache.sh's `awk > .new` did. See patch-vm-interrupt.sh for the model.

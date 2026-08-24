@@ -18,6 +18,12 @@ RC="$ROOT/src/rc/${VARIANT}.rc"
 OUT="$ROOT/vendor/static-${VARIANT}"
 PRISTINE=/tmp/phpwasm-build/vmgen-pristine
 
+# an unproven arm lives as .rc.pending so the push matrix cannot schedule it; building one
+# explicitly by name is how it earns the rename
+if [ ! -f "$RC" ] && [ -f "$RC.pending" ]; then
+	echo "building the PENDING rc $RC.pending; rename it to $RC once it links"
+	RC="$RC.pending"
+fi
 [ -f "$RC" ] || {
 	echo "no rc file at $RC"
 	exit 1
@@ -42,6 +48,38 @@ case "$VARIANT" in
 	vmgoto) VM_KIND=GOTO ;;
 	*) VM_KIND= ;;
 esac
+
+# Flags that are NOT link-only have to arrive as a make command-line variable: Makefile:209 clears
+# EXTRA_CFLAGS after the rc is included, so an rc cannot carry a compile flag at all. Derived here
+# rather than in build.yml so a local build is the same build CI runs -- it was only in the workflow,
+# which meant a local `build-variant.sh jspisjlj` silently compiled without -sSUPPORT_LONGJMP=wasm.
+COMPILE_FLAGS=
+grep -q 'SUPPORT_LONGJMP=wasm' "$RC" && COMPILE_FLAGS="$COMPILE_FLAGS -sSUPPORT_LONGJMP=wasm"
+grep -q 'MEMORY64=1' "$RC" && COMPILE_FLAGS="$COMPILE_FLAGS -sMEMORY64=1"
+if [ -n "$COMPILE_FLAGS" ]; then
+	# a caller-supplied MAKE_EXTRA wins, so an explicit override is still possible
+	MAKE_EXTRA="${MAKE_EXTRA:-EXTRA_CFLAGS=${COMPILE_FLAGS# }}"
+	export MAKE_EXTRA
+	echo "compile-half flags for $VARIANT: $MAKE_EXTRA"
+fi
+
+# wasm64 changes the ABI of every object, so a tree configured for wasm32 cannot be reused: the
+# `configured` stamp is a plain file target and would otherwise be honoured across the change.
+#
+# The stamp lives in the CHECKOUT ROOT, not in php-src: php-src is created by the builder container
+# and is not host-writable on a Linux runner, which is the same trap that broke two patch scripts.
+ABI=wasm32
+grep -q 'MEMORY64=1' "$RC" && ABI=wasm64
+ABI_STAMP="$SRC/.php-wasm-abi"
+WAS="$(cat "$ABI_STAMP" 2> /dev/null || echo wasm32)"
+if [ "$WAS" != "$ABI" ]; then
+	echo "the tree was built for $WAS and this is a $ABI build; forcing a reconfigure"
+	rm -f "$SRC/third_party/php${PHP_VERSION}-src/configured"
+fi
+printf '%s\n' "$ABI" > "$ABI_STAMP"
+MEMORY64=0
+[ "$ABI" = wasm64 ] && MEMORY64=1
+export MEMORY64
 
 PHP_SRC="$SRC/third_party/php${PHP_VERSION}-src"
 ZEND="$PHP_SRC/Zend"

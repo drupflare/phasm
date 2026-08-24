@@ -9,9 +9,9 @@
 # raised by SIGALRM/SIGPROF; wasm has no signals, so nothing ever raises it and
 # the whole mechanism is dead code. This patch raises it from a countdown.
 #
-# WHERE THE POLL SITES ARE, measured in this tree, ZEND_VM_KIND_CALL with no
+# Where the poll sites are, measured in this tree, ZEND_VM_KIND_CALL with no
 # global registers (wasm32 never gets HAVE_GCC_GLOBAL_REGS):
-#   Zend/zend_execute.c:5342   ZEND_VM_SET_OPCODE() -- EVERY branch/jump handler,
+#   Zend/zend_execute.c:5342   ZEND_VM_SET_OPCODE() -- every branch/jump handler,
 #                              which is what makes loop back-edges poll
 #   Zend/zend_vm_execute.h     ZEND_VM_LOOP_INTERRUPT_CHECK() at execute_ex entry
 #                              and after any handler that returns ret>0 (VM_ENTER,
@@ -19,15 +19,15 @@
 # ZEND_VM_ENTER_EX() is `return 1` in this configuration, so its own
 # INTERRUPT_CHECK never compiles in; the two above are the live ones.
 #
-# The patch goes in Zend/zend_execute.c, NOT in the generated
+# The patch goes in Zend/zend_execute.c, not in the generated
 # Zend/zend_vm_execute.h: the macros live in the hand-written file and the
 # generated header is #included at its bottom, so one file covers every poll site
 # and a `php zend_vm_gen.php` regeneration cannot wipe it.
 #
-# HOT PATH COST: one global load, one decrement, one store, one branch per poll
+# Hot path cost: one global load, one decrement, one store, one branch per poll
 # site. zend_wasm_tick_fired() is zend_never_inline so nothing else lands inline.
 #
-# SAFETY, both rules are enforced in C rather than trusted to the host:
+# Safety; both rules are enforced in C rather than trusted to the host:
 #   - the handler masks itself for the duration of its own yield, so a suspension
 #     can never begin inside a suspension
 #   - zend_wasm_slice_mask(1)/(0) is exported so the host brackets its SQL bridge
@@ -59,10 +59,10 @@ MODE="${2:-apply}"
 
 # --verify answers "is this tree patched, and correctly?" without reading the file by hand.
 #
-# WHY IT IS NEEDED SEPARATELY FROM THE APPLY CHECK. An apply run on an already-patched tree
+# Needed separately from the apply check: an apply run on an already-patched tree
 # prints "already patched" and exits 0, which is indistinguishable from a fresh successful
-# patch -- and neither says anything to a LATER step. The consequence is specific rather than
-# vague: an unpatched tree still builds and still boots, so a build that silently skipped this
+# patch -- and neither says anything to a later step. The consequence is specific: an
+# unpatched tree still builds and still boots, so a build that silently skipped this
 # step produces a variant with no tick counter, which then reads as a platform limit ("this
 # binary cannot be interrupted") rather than as a missing build step.
 #

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Reports what a produced build actually contains, and optionally asserts it.
 #
-# WHY THIS EXISTS. A binary's identity used to be "the .rc plus whatever the
+# A binary's identity used to be "the .rc plus whatever the
 # checkout was that day", and every extension table in TECHNICAL_REPORT.md was
 # assembled by hand from `strings`. That is how a whole round of functional numbers
 # got measured on a binary that could never ship (RULE 0b). This is the same
@@ -63,11 +63,11 @@ GLUE="$(find "$DIR" -maxdepth 1 -name '*.mjs' | head -1)"
 
 size_of() { stat -f%z "$1" 2> /dev/null || stat -c%s "$1"; }
 
-# LEVEL 6 AND ONE STREAM, because that is what the meter does. wrangler compresses
+# Level 6 and one stream, because that is what the meter does. wrangler compresses
 # the bundle it builds at gzip's default level over a single stream spanning both
 # uploaded files. This script used `gzip -9` summed per file, which reported 25,260
-# LOW on control85 and 22,475 low on noopcache85 -- optimistic, against a hard cap.
-# Measured, the LEVEL is the entire error: two streams versus one differed by 7 and
+# low on control85 and 22,475 low on noopcache85 -- optimistic, against a hard cap.
+# Measured, the level is the entire error: two streams versus one differed by 7 and
 # 82 bytes, because the wasm compresses to near-incompressible and the glue has
 # nothing useful to back-reference in it.
 RAW="$(size_of "$WASM")"
@@ -162,10 +162,10 @@ if [ "$EXPECT_NO_OPCACHE" = 1 ] && [ "$HAS_OPCACHE" != 0 ]; then
 	FAILED=1
 fi
 
-# THE EXTENSION GATE, and it exists because a build EXITED 0 while missing seven of them.
+# The extension gate, and it exists because a build exited 0 while missing seven of them.
 #
 # A fresh clone leaves third_party/ holding only php8.3-src, so --enable-vrzno, --with-libxml,
-# --enable-dom, --with-zlib, simplexml, xml and yaml all silently DROP: configure cannot find the
+# --enable-dom, --with-zlib, simplexml, xml and yaml all silently drop: configure cannot find the
 # libraries, and the flags that need no library (--enable-opcache, --enable-ctype) still take. The
 # result looks like a healthy build, passes --expect-static, and is not the binary anyone asked for.
 #
@@ -220,7 +220,7 @@ if [ -n "$EXPECT_RC" ]; then
 			esac
 		done <<< "$(grep -E '^[[:space:]]*WITH_[A-Z0-9_]+=' "$EXPECT_RC" | tr -d '[:blank:]')"
 
-		# THE SECOND MECHANISM, and skipping it would have left the variants that matter
+		# The second mechanism, and skipping it would have left the variants that matter
 		# unchecked. php-wasm cannot express mbstring through WITH_*: `WITH_MBSTRING=static`
 		# emits `--with-mbstring`, which ext/mbstring/config.m4 silently ignores because it
 		# declares PHP_ARG_ENABLE with no --with- form. So mbstring.rc sets WITH_MBSTRING=0 and

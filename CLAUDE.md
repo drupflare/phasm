@@ -15,7 +15,7 @@ binaries, 187 MB, on exactly one machine**, and four variants (`static-nolto`, `
 `static-control`, `static-iconv`) were already never kept, so the probe configs naming them cannot be
 rebuilt. Three of those four (`nolto`, `control`, `iconv`) are **being rebuilt now** in a separate
 session that owns the Docker work; leave their rc files alone while that runs, because even a
-comment-only edit changes the sha256 the release body records. `vmswitch` is not being rebuilt - see
+comment-only edit changes the sha256 the release body records. `vmswitch` is not being rebuilt and its rc file is deleted - see
 the SWITCH A/B section below. Every `vendor/static-*` directory here cost hours of QEMU-emulated compilation.
 `build-variant.sh` **refuses to overwrite an existing build** - that refusal is the guard, not an
 inconvenience to route around.
@@ -32,7 +32,14 @@ gitignored). If you are following an older note that says `build/build-variant.s
 **Do not re-attempt this without first re-reading the last paragraph.** The distinction is the whole
 record: the arms did fail, and that failure is not why the work stopped.
 
-**What was attempted.** `vmswitch` (`src/rc/vmswitch.rc`) builds `control` against a SWITCH-dispatch
+**`src/rc/vmswitch.rc` NO LONGER EXISTS, and that is deliberate rather than an oversight.** The arm
+was deleted from `src/rc/`, so `build.yml`'s "all" enumeration (`find src/rc -name '*.rc'`) cannot
+schedule it and nobody pays 30 minutes to 2 hours for a number that is already recorded below. The
+question it existed to answer is answered: SWITCH dispatch costs **+129,760 gzipped bytes** in the
+consuming repo, so it is a measurement artifact rather than a shipping candidate. This section stays
+as the arm's provenance; reinstate the rc file only if the question changes.
+
+**What was attempted.** `vmswitch` built `control` against a SWITCH-dispatch
 Zend VM instead of the shipped CALL dispatch, to measure what dispatch kind is worth. Three link
 configurations were tried to get a binary out of it: **full LTO**, **ThinLTO**, and **no-LTO**.
 
@@ -78,6 +85,43 @@ is charged. If that day comes:
 **What is NOT claimed here.** Nothing about whether SWITCH dispatch is faster or smaller than CALL on
 wasm32. No arm produced a binary, so there is no measurement in either direction, and any number
 attached to this variant later has to come from a build that actually linked.
+
+## The wasm64 arm is `.rc.pending`, and `.rc.pending` now means "dispatch-only" rather than "hidden"
+
+`src/rc/wasm64.rc.pending` is `control85.rc` with `-sMEMORY64=1` and nothing else changed, so the
+only variable between the two is pointer width. It has never linked. It answers one question for the
+consumer: what a Drupal heap peaks at when `zend_long` is 64 bits, which is the last thing standing
+between this project and `PHP_INT_SIZE=8`.
+
+**Score it on the AUTHENTICATED render, never a plain one.** A plain render reads 96.00 MiB on every
+arm because the heap never grows past `INITIAL_MEMORY`; the peak lives in the authenticated column.
+`worker/scripts/measure/growth-ladder.ts` takes a glue variant and a binary, so the new `.wasm` needs
+no new instrument.
+
+**Three mechanical facts, each of which would otherwise cost a multi-hour failure:**
+
+- **`MEMORY64` is not link-only.** `Makefile:209` clears `EXTRA_CFLAGS` after the rc is included, so
+  an rc physically cannot carry a compile flag. `build-variant.sh` greps the rc and passes
+  `EXTRA_CFLAGS=-sMEMORY64=1` as a make command-line variable. This is the `-sSUPPORT_LONGJMP=wasm`
+  trap with a second occupant.
+- **The dependency prefix has an ABI and nothing used to check it.** `fetch-deps.sh` answers "already
+  built" from a file's existence, so a wasm64 php-src would link a warm wasm32 `libxml2.a` and die at
+  `wasm-ld` hours later. There is now an ABI stamp at `lib/.abi`; a change wipes the prefix and the
+  dependency source trees. Same prefix either way, because php-wasm hardcodes `/src/lib`.
+- **The `configured` stamp survives an ABI change.** `build-variant.sh` drops it when
+  `.php-wasm-abi` in the checkout root disagrees. That stamp is in the checkout root rather than in
+  php-src deliberately: php-src is container-created and not host-writable on a Linux runner.
+
+**One item the research listed that turned out to already be done:** extending opcache's autoconf
+shared-memory allowlist to `wasm64-unknown-emscripten`. `build-static.sh` forces
+`php_cv_shm_mmap_anon=yes` by substitution rather than by adding a triple, so it is
+triple-independent and already covers wasm64.
+
+**`.rc.pending` changed meaning.** It used to mean an arm nothing could build, which also meant
+nothing could check it. Now `build.yml`'s "Check the RC Exists" and `build-variant.sh` both fall back
+to `<variant>.rc.pending`, so a pending arm is buildable BY NAME through `workflow_dispatch` while
+staying invisible to the push matrix, and `lint-rc.sh` evaluates it against php-wasm's guards like
+any other. Rename it to `.rc` the first time it links; that is what puts it in every push.
 
 ## Traps that cost hours, not minutes
 

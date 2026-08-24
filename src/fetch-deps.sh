@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Fetches and builds the libraries php-wasm's Makefile does NOT fetch.
+# Fetches and builds the libraries php-wasm's Makefile does not fetch.
 #
-# WHY THIS EXISTS. `build.yml` ran end to end, exited 0, passed --expect-static and produced a
-# binary missing SEVEN extensions. php-wasm master's Makefile clones php-src and nothing else:
+# `build.yml` ran end to end, exited 0, passed --expect-static and produced a binary missing
+# seven extensions. php-wasm master's Makefile clones php-src and nothing else:
 # `ARCHIVES=` at line 155 is empty with no `ARCHIVES+=` anywhere, though `configured` depends on
 # it at line 323. So on a fresh checkout every configure flag that needs a library silently drops
 # -- --enable-vrzno, --with-libxml, --enable-dom, --enable-simplexml, --enable-xml, --with-yaml,
 # --with-zlib -- while the flags needing none still take, and the result looks healthy.
 #
-# PROVENANCE. Every source, ref and configure line below was RECOVERED from a warm build tree
+# Provenance: every source, ref and configure line below was recovered from a warm build tree
 # that produced a verified binary, not guessed: the git remotes and tags come from each
 # dependency's own .git, and the configure invocations come from the `$ ./configure ...` line
 # each one records in its config.log. What is inferred rather than recovered is named inline.
@@ -17,6 +17,11 @@
 #   src/fetch-deps.sh <php-wasm-checkout> [--with-iconv]
 #
 # Idempotent: an already-built library is left alone, so a warm tree is not rebuilt.
+#
+# MEMORY64=1 builds every library for wasm64 instead. The ABI is recorded in a stamp beside the
+# prefix, because "already built" is otherwise answered by a file whose ABI nobody checked: a
+# wasm64 php-src linked against a warm wasm32 libxml2.a fails at wasm-ld, hours in, with an error
+# that reads as a toolchain problem. An ABI change wipes the prefix and rebuilds.
 set -euo pipefail
 
 CHECKOUT="${1:?usage: fetch-deps.sh <php-wasm-checkout> [--with-iconv]}"
@@ -49,8 +54,22 @@ mkdir -p "$THIRD"
 PREFIX="$DEP_PREFIX"
 CACHE="$DEP_CONFIG_CACHE"
 
+# wasm64 changes the ABI of every object, so it is a property of the whole prefix rather than of one
+# library. Same prefix either way: php-wasm's Makefile hardcodes /src/lib, so a second prefix would
+# need edits in the Makefile, build-static.sh and the pkg-config path.
+MEMORY64="${MEMORY64:-0}"
+if [ "$MEMORY64" = 1 ]; then
+	ABI=wasm64
+	DEP_EMCC_CFLAGS="-sMEMORY64=1"
+else
+	ABI=wasm32
+	DEP_EMCC_CFLAGS=""
+fi
+ABI_STAMP="$CHECKOUT/lib/.abi"
+
 # Runs a command inside the emscripten builder, which is what makes the output wasm rather than
-# native.
+# native. EMCC_CFLAGS is appended by emcc to every invocation, which is what carries the ABI into
+# each dependency's own configure and make without patching any of their build systems.
 PKG_CONFIG_PATH_IN_BUILDER=/src/lib/lib/pkgconfig
 in_builder() {
 	local workdir="$1"
@@ -59,12 +78,28 @@ in_builder() {
 		cd "$CHECKOUT" || exit 1
 		docker compose -p phpwasm run -T --rm \
 			-e PKG_CONFIG_PATH="$PKG_CONFIG_PATH_IN_BUILDER" \
+			-e EMCC_CFLAGS="$DEP_EMCC_CFLAGS" \
 			-e OUTER_UID="$(id -u)" \
 			-w "$workdir" emscripten-builder bash -lc "$*"
 	)
 }
 
 have_lib() { [ -f "$CHECKOUT/lib/lib/$1" ]; }
+
+# A prefix built for the other ABI is worse than an empty one: have_lib() would answer yes and the
+# mismatch surfaces at the final link rather than here. Wipe it, and the dependency source trees
+# with it, since their configure output is ABI-specific too.
+if [ -d "$CHECKOUT/lib" ] && [ "$(cat "$ABI_STAMP" 2> /dev/null || echo wasm32)" != "$ABI" ]; then
+	echo "prefix holds $(cat "$ABI_STAMP" 2> /dev/null || echo wasm32) libraries and this is a $ABI build; rebuilding them"
+	rm -rf "${CHECKOUT:?}/lib"
+	for dep in libxml2 libyaml zlib "libiconv-$LIBICONV_VERSION"; do
+		rm -rf "${THIRD:?}/$dep"
+	done
+	in_builder /src "rm -f $CACHE" || true
+fi
+mkdir -p "$CHECKOUT/lib"
+printf '%s\n' "$ABI" > "$ABI_STAMP"
+echo "building dependencies for $ABI"
 
 # macOS has shasum and no sha256sum; CI is the other way round
 sha256_of() {

@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Drops ext/opcache from a PHP 8.5 source tree.
 #
-# WHY THIS NEEDS A PATCH AT ALL
+# Why this needs a patch at all:
 # PHP 8.5 made OPcache mandatory: ext/opcache/config.m4 declares
-# PHP_ARG_ENABLE for huge-code-pages and opcache-jit but NOT for opcache
+# PHP_ARG_ENABLE for huge-code-pages and opcache-jit but not for opcache
 # itself, so PHP_NEW_EXTENSION([opcache], ...) is unconditional and no
 # configure flag can switch it off. Contrast ext/pdo, which still declares
 # PHP_ARG_ENABLE([pdo]), which is why nopdo85.rc gets away with appending
 # --disable-pdo.
 #
-# WHY IT IS THE LARGEST UNCOUNTED TERM
+# Why it is the largest uncounted term:
 # No binary in vendor/ has ever contained opcache: Zend OPcache, accel_startup
 # and zend_accel_ are 0 occurrences across static-o2, static-jspisjlj,
 # static-o3mbsjlj and static-opcache itself, confirmed including a live probe
@@ -17,7 +17,7 @@
 # ~20 translation units of SSA analysis under Optimizer/ -- is new mass on the
 # 8.5 line and 100% delta rather than a difference.
 #
-# WHY NO SYMBOL STUB IS NEEDED, measured rather than assumed
+# Why no symbol stub is needed, measured:
 # Everything under Zend/ and main/ that names an opcache symbol reduces to two,
 # and neither survives as a link dependency on this build:
 #   zend_accel_schedule_restart_hook -- Zend DEFINES it, Zend/zend.c:97, as
@@ -84,11 +84,11 @@ fi
 # create a sibling nor truncate the file. Docker Desktop on macOS maps the host
 # user, which is why two earlier host-side versions passed locally and failed in CI.
 #
-# The host READS and computes (reads are permitted), then `docker compose run -T`
+# The host reads and computes (reads are permitted), then `docker compose run -T`
 # pipes the result in and the container writes it. That keeps the awk program out of
 # the bash -> docker -> bash -lc quoting layers entirely.
 #
-# src/drop-opcache.awk comments the WHOLE PHP_NEW_EXTENSION invocation by paren
+# src/drop-opcache.awk comments the whole PHP_NEW_EXTENSION invocation by paren
 # balance. Commenting only its first line left the source list and `[yes])` as bare
 # m4 and configure died with "syntax error near unexpected token ')'".
 NEW_M4="$(awk -f "$(dirname "$0")/drop-opcache.awk" "$M4")" || fail "the awk edit failed; see its message above"

@@ -35,8 +35,12 @@ MAKE_BIN="${MAKE_BIN:-make}"
 failed=0
 checked=0
 
-for rc in "$ROOT"/src/rc/*.rc; do
-	name="$(basename "$rc" .rc)"
+# .rc.pending is included on purpose: an arm the push matrix cannot schedule is exactly the one
+# nothing else checks, and evaluating a guard costs a second where a build costs hours
+for rc in "$ROOT"/src/rc/*.rc "$ROOT"/src/rc/*.rc.pending; do
+	[ -f "$rc" ] || continue
+	name="$(basename "$rc" .pending)"
+	name="$(basename "$name" .rc)"
 	php_version="$(grep -m1 '^PHP_VERSION=' "$rc" | cut -d= -f2)"
 	out=""
 	if ! out="$(
