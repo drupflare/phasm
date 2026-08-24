@@ -22,14 +22,19 @@
  * Idempotent, and keyed on the patched shape rather than on a marker comment.
  *
  * Usage:
- *   node patch-vrzno-lp64.mjs <ext/vrzno dir> [--verify] [--extra <file> ...]
+ *   node patch-vrzno-lp64.mjs <ext/vrzno dir> [--verify] [--extra <file> ...] [--out-dir <dir>]
  *
  * `--extra` rewrites an already-built emscripten glue with the same table, which is how the
  * transform is proven in seconds against a downloaded artifact instead of in a 12-minute build.
+ *
+ * `--out-dir` writes the rewritten sources to a staging directory instead of over the originals.
+ * php-src is created by the builder container, so on a Linux runner its `ext/` is owned by the
+ * container's uid and a host-side write fails with EACCES; the shell wrapper stages here and lets
+ * the container do the write, the same split `patch-drop-opcache.sh` uses.
  */
 
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 /** C types that are 64 bits wide under LP64 but are NOT pointers; they still cross as BigInt */
 const WIDE_SCALARS = new Set([
@@ -186,14 +191,23 @@ export function rewrite(source, signatures) {
 
 function main() {
 	const args = process.argv.slice(2);
-	const dir = args.find((a) => !a.startsWith('--'));
 	const verify = args.includes('--verify');
 	const extras = [];
+	const positional = [];
+	let outDir = null;
+	// a flag's VALUE must not be mistaken for the positional; `--extra glue.mjs` alone already
+	// could be, and `--out-dir` makes that two ways to pick up the wrong directory
 	for (let i = 0; i < args.length; i++) {
-		if (args[i] === '--extra' && args[i + 1]) extras.push(args[++i]);
+		const a = args[i];
+		if (a === '--extra' && args[i + 1]) extras.push(args[++i]);
+		else if (a === '--out-dir' && args[i + 1]) outDir = args[++i];
+		else if (!a.startsWith('--')) positional.push(a);
 	}
+	const dir = positional[0];
 	if (!dir) {
-		console.error('usage: node patch-vrzno-lp64.mjs <ext/vrzno dir> [--verify] [--extra <file>]');
+		console.error(
+			'usage: node patch-vrzno-lp64.mjs <ext/vrzno dir> [--verify] [--extra <file>] [--out-dir <dir>]'
+		);
 		process.exit(2);
 	}
 
@@ -218,7 +232,9 @@ function main() {
 		totalWide += wide;
 		totalCoerced += coerced.count;
 		allProblems.push(...problems.map((p) => `${path}: ${p}`));
-		if (!verify && coerced.out !== source) writeFileSync(path, coerced.out);
+		if (!verify && coerced.out !== source) {
+			writeFileSync(outDir ? join(outDir, basename(path)) : path, coerced.out);
+		}
 		console.log(`  ${path}  ${changed} site(s) retyped, ${coerced.count} EM_ASM arg(s) coerced`);
 	}
 

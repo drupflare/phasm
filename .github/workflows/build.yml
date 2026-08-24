@@ -75,6 +75,8 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Parse Every Script
         run: bash tools/lint-shell.sh
+      - name: Drive the Patch State Machines
+        run: bun run test
       - name: Run ShellCheck
         run: |
           if ! command -v shellcheck > /dev/null; then
@@ -529,19 +531,24 @@ jobs:
           notified=0
           for variant in $CONSUMER_VARIANTS; do
             rc="src/rc/${variant}.rc"
+            # a consumed variant with no rc is a misconfiguration of CONSUMER_VARIANTS rather than
+            # a property of this run, so it fails instead of being skipped like the case below
             if [ ! -f "$rc" ]; then
-              echo "::warning::$variant has no rc in this repository; not notifying"
-              continue
+              echo "::error::CONSUMER_VARIANTS names $variant, which has no src/rc/${variant}.rc" >&2
+              exit 1
             fi
             php_version="$(grep -m1 '^PHP_VERSION=' "$rc" | cut -d= -f2)"
             if [ -z "$php_version" ]; then
-              echo "::warning::$rc declares no PHP_VERSION; not notifying"
-              continue
+              echo "::error::$rc declares no PHP_VERSION" >&2
+              exit 1
             fi
             artifact_id="$(jq -r --arg n "phasm-${variant}-${GITHUB_SHA}" \
               '[.artifacts[] | select(.name == $n)] | .[0].id // empty' /tmp/artifacts.json)"
             if [ -z "$artifact_id" ]; then
-              echo "::warning::this run published no phasm-${variant}-${GITHUB_SHA}; not notifying"
+              # MISSING CANNOT MEAN FAILED HERE: publish needs build, and this job needs publish, so
+              # a build that failed never reaches this line. A single-variant dispatch -- wasm64,
+              # say -- is the normal way a run carries nothing the consumer wants
+              echo "::notice::this run did not build $variant; nothing to notify for it"
               continue
             fi
 
@@ -567,7 +574,7 @@ jobs:
           done
 
           if [ "$notified" -eq 0 ]; then
-            echo "::error::no consumed variant was notified; $CONSUMER_REPO stays on its pin" >&2
-            exit 1
+            echo "::notice::this run built nothing $CONSUMER_REPO consumes; it stays on its pin"
+            exit 0
           fi
           echo "notified $CONSUMER_REPO about $notified interpreter(s)"

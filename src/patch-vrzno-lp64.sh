@@ -53,8 +53,44 @@ if ! command -v node > /dev/null 2>&1; then
 fi
 
 if [ "$MODE" = "--verify" ]; then
+	# reads are permitted on the container-owned tree, so verify needs none of the staging below
 	node "$HERE/patch-vrzno-lp64.mjs" "$VRZNO_DIR" --verify
 	echo "patch-vrzno-lp64: verified, every site is already LP64-correct"
-else
-	node "$HERE/patch-vrzno-lp64.mjs" "$VRZNO_DIR"
+	exit 0
 fi
+
+# THE WRITE MUST HAPPEN INSIDE THE BUILDER CONTAINER. php-src is created there, so on a Linux
+# runner ext/vrzno is owned by the container's uid and a host-side write dies with EACCES -- which
+# is the same reason fetch-deps.sh copies vrzno in from inside. Docker Desktop on macOS maps the
+# host user, so a host-side write passes locally and fails in CI.
+STAGE="$(mktemp -d)"
+trap 'rm -rf "$STAGE"' EXIT
+
+node "$HERE/patch-vrzno-lp64.mjs" "$VRZNO_DIR" --out-dir "$STAGE"
+
+REL="third_party/php${PHP_VERSION}-src/ext/vrzno"
+wrote=0
+for staged in "$STAGE"/*; do
+	[ -f "$staged" ] || continue
+	name="$(basename "$staged")"
+	(
+		cd "$PHP_WASM_DIR" || exit 1
+		docker compose -p phpwasm run -T --rm \
+			-e OUTER_UID="$(id -u)" -w /src \
+			emscripten-builder bash -lc "cat > /src/$REL/$name"
+	) < "$staged" || {
+		echo "patch-vrzno-lp64: the in-container write of $name failed" >&2
+		exit 1
+	}
+	wrote=$((wrote + 1))
+done
+
+if [ "$wrote" -eq 0 ]; then
+	echo "patch-vrzno-lp64: nothing to write; the tree was already LP64-correct"
+else
+	echo "patch-vrzno-lp64: wrote $wrote rewritten source(s) into $REL"
+fi
+
+# a write that landed nowhere would leave a tree that links and misbehaves, so the apply asserts
+# rather than reporting on the strength of the staging step alone
+node "$HERE/patch-vrzno-lp64.mjs" "$VRZNO_DIR" --verify
