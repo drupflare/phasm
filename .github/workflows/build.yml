@@ -344,8 +344,11 @@ jobs:
       - name: Fix emscripten's MEMORY64 Glue Defects
         run: |
           if grep -q 'MEMORY64=1' "$RC"; then
-            GLUE="$PHP_WASM_DIR/packages/php-wasm-web/php${PHP_VERSION}-worker.mjs"
-            [ -f "$GLUE" ] || GLUE="$(find "$PHP_WASM_DIR" -name "php${PHP_VERSION}-worker.mjs" -print -quit)"
+            # the glue that SHIPS is the one staged from vendor/static-<variant>. an earlier version
+            # searched PHP_WASM_DIR and found the build tree's copy, so both fixes and their --verify
+            # landed on a file the artifact does not contain
+            GLUE="vendor/static-${{ matrix.variant }}/php${PHP_VERSION}-worker.mjs"
+            test -f "$GLUE" || { echo "::error::no glue at $GLUE; nothing would be patched" >&2; exit 1; }
             node src/patch-lp64-glue.mjs "$GLUE"
             node src/patch-lp64-glue.mjs "$GLUE" --verify
           else
@@ -386,6 +389,17 @@ jobs:
             cp "$f" "dist/phasm-${{ matrix.variant }}-$(basename "$f")"
           done
           ls -l dist
+
+      - name: Assert the STAGED Glue Carries the LP64 Fixes
+        run: |
+          # against dist/ rather than against the build tree: a --verify that passes on a copy the
+          # artifact does not contain is what published a wasm64 build with neither fix in it
+          if grep -q 'MEMORY64=1' "$RC"; then
+            node src/patch-lp64-glue.mjs \
+              "dist/phasm-${{ matrix.variant }}-php${PHP_VERSION}-worker.mjs" --verify
+          else
+            echo "rc is wasm32, nothing to assert"
+          fi
 
       - name: Compose the Release Notes Fragment
         run: |
