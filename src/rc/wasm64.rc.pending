@@ -73,4 +73,17 @@ WITH_WAITLINE=0
 # forces php_cv_shm_mmap_anon=yes by substitution, which is triple-independent.
 CONFIGURE_FLAGS+= --enable-opcache
 
+# --host FORCES CROSS MODE. emconfigure passes none, so autoconf answers
+# "checking whether we are cross compiling" by RUNNING a test binary under node,
+# which cannot execute a memory64 module without a flag. Measured on run
+# 32685347574: libxml2 died with "cannot run C compiled programs" before any
+# object was built, and php-src's own configure reaches the same wall.
+#
+# The triple names wasm32 deliberately. It decides which TESTS are skipped, not
+# the ABI, which comes from -sMEMORY64=1 below and from EXTRA_CFLAGS; every size
+# check autoconf makes is compile-time and stays correct either way. Naming
+# wasm64-unknown-emscripten trades this failure for "invalid configuration" on
+# any config.sub older than the triple.
+CONFIGURE_FLAGS+= --host=wasm32-unknown-emscripten
+
 EXTRA_FLAGS+= -s MEMORY64=1

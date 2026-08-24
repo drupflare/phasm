@@ -111,6 +111,14 @@ no new instrument.
 - **The `configured` stamp survives an ABI change.** `build-variant.sh` drops it when
   `.php-wasm-abi` in the checkout root disagrees. That stamp is in the checkout root rather than in
   php-src deliberately: php-src is container-created and not host-writable on a Linux runner.
+- **AUTOCONF RUNS TEST BINARIES, and node cannot run a wasm64 one.** `emconfigure` passes no
+  `--host`, so autoconf sets `cross_compiling=no` and answers "checking whether we are cross
+  compiling" by EXECUTING what it just compiled. That works on wasm32 and dies on wasm64 with
+  `cannot run C compiled programs`, three minutes in, before a single object exists -- measured on
+  run 32685347574. Both halves need `--host`: `DEP_HOST` in `fetch-deps.sh` for the libraries and a
+  `CONFIGURE_FLAGS+= --host=` line in the rc for php-src. **The triple says wasm32 on purpose**: it
+  selects which tests are skipped, not the ABI, and every size check autoconf makes is compile-time.
+  libxml2 2.9.10 ships a 2019 `config.sub` that would reject `wasm64-unknown-emscripten` outright.
 
 **One item the research listed that turned out to already be done:** extending opcache's autoconf
 shared-memory allowlist to `wasm64-unknown-emscripten`. `build-static.sh` forces

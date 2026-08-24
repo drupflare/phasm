@@ -61,9 +61,24 @@ MEMORY64="${MEMORY64:-0}"
 if [ "$MEMORY64" = 1 ]; then
 	ABI=wasm64
 	DEP_EMCC_CFLAGS="-sMEMORY64=1"
+	# --host FORCES AUTOCONF INTO CROSS MODE, and that is the whole reason it is here.
+	#
+	# emconfigure passes no --host, so autoconf sets cross_compiling=no and answers "checking whether
+	# we are cross compiling" by RUNNING a test binary under node. That works on wasm32 and fails on
+	# wasm64 -- node cannot execute a memory64 module without a flag -- so libxml2's configure dies
+	# with "cannot run C compiled programs" before a single object is built. Measured: run 32685347574.
+	#
+	# The triple is wasm32's on purpose. It selects which TESTS are skipped, not the ABI, which comes
+	# from EMCC_CFLAGS above; every size check autoconf runs is compile-time and stays correct. The
+	# honest triple is wasm64-unknown-emscripten and libxml2 2.9.10 ships a 2019 config.sub that
+	# predates it, so naming it would trade this failure for "invalid configuration".
+	DEP_HOST="--host=${DEP_HOST_TRIPLE:-wasm32-unknown-emscripten}"
 else
 	ABI=wasm32
 	DEP_EMCC_CFLAGS=""
+	# deliberately empty on wasm32: that path builds today without it, and adding a --host changes
+	# which branches autoconf takes across every dependency
+	DEP_HOST=""
 fi
 ABI_STAMP="$CHECKOUT/lib/.abi"
 
@@ -142,7 +157,7 @@ else
 	# autotools inputs. A release TARBALL would have one; the tag does not.
 	in_builder /src/third_party/libxml2 "
 		[ -f configure ] || ./autogen.sh --help > /dev/null 2>&1 || autoreconf -fi
-		emconfigure ./configure $LIBXML2_CONFIGURE --prefix=$PREFIX --cache-file=$CACHE
+		emconfigure ./configure $LIBXML2_CONFIGURE $DEP_HOST --prefix=$PREFIX --cache-file=$CACHE
 		emmake make -j\"\$(nproc)\" && emmake make install
 	"
 fi
@@ -156,7 +171,7 @@ else
 		"$LIBYAML_REPO" "$THIRD/libyaml"
 	in_builder /src/third_party/libyaml "
 		[ -f configure ] || ./bootstrap
-		emconfigure ./configure $LIBYAML_CONFIGURE --prefix=$PREFIX --cache-file=$CACHE
+		emconfigure ./configure $LIBYAML_CONFIGURE $DEP_HOST --prefix=$PREFIX --cache-file=$CACHE
 		emmake make -j\"\$(nproc)\" && emmake make install
 	"
 fi
@@ -191,7 +206,7 @@ if [ "$WANT_ICONV" = 1 ]; then
 			tar -xzf "/tmp/libiconv-$LIBICONV_VERSION.tar.gz" -C "$THIRD"
 		}
 		in_builder "/src/third_party/libiconv-$LIBICONV_VERSION" "
-			emconfigure ./configure $LIBICONV_CONFIGURE --prefix=$PREFIX \
+			emconfigure ./configure $LIBICONV_CONFIGURE $DEP_HOST --prefix=$PREFIX \
 				--cache-file=$CACHE
 			emmake make -j\"\$(nproc)\" && emmake make install
 		"
