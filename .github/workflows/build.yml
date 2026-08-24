@@ -351,6 +351,13 @@ jobs:
             test -f "$GLUE" || { echo "::error::no glue at $GLUE; nothing would be patched" >&2; exit 1; }
             node src/patch-lp64-glue.mjs "$GLUE"
             node src/patch-lp64-glue.mjs "$GLUE" --verify
+
+            # php-wasm's OWN library JS calls vrzno's exports too -- `jsToZval` reaches
+            # `vrzno_expose_create_null` -- and those sites are not in ext/vrzno, so patching the C
+            # cannot reach them. Measured: one site survived and threw `Cannot convert N to a BigInt`
+            VRZNO="$PHP_WASM_DIR/third_party/php${PHP_VERSION}-src/ext/vrzno"
+            node src/patch-vrzno-lp64.mjs "$VRZNO" --extra "$GLUE"
+            node src/patch-vrzno-lp64.mjs "$VRZNO" --extra "$GLUE" --verify
           else
             echo "rc is wasm32, emscripten's memory64 glue defects do not apply"
           fi
