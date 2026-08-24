@@ -45,7 +45,9 @@ expect_exit() {
 	fi
 }
 
-TREE="$(mktemp -d -t phasmpatch)"
+# the XXXXXX is required: GNU mktemp rejects a template without it, and this script had never run
+# anywhere but macOS until the lint job started driving it
+TREE="$(mktemp -d -t phasmpatch.XXXXXX)"
 trap 'rm -rf "$TREE"' EXIT
 SRCDIR="$TREE/third_party/php8.3-src/Zend"
 mkdir -p "$SRCDIR"

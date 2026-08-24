@@ -263,7 +263,8 @@ EMSCRIPTEN_KEEPALIVE uint32_t zend_wasm_slice_stat(int which)
 EOF
 )"
 
-BLOCK_FILE="$(mktemp -t vmint)"
+# GNU mktemp rejects a template with no XXXXXX, so the macOS-only form is a live failure on a runner
+BLOCK_FILE="$(mktemp -t vmint.XXXXXX)"
 printf '%s\n' "$BLOCK" > "$BLOCK_FILE"
 trap 'rm -f "$BLOCK_FILE"' EXIT
 

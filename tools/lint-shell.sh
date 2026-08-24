@@ -119,6 +119,21 @@ for rc in src/rc/*.rc src/rc/*.rc.pending; do
 	fi
 done
 
+# macOS mktemp accepts a template with no XXXXXX and GNU mktemp refuses it, so this fails ONLY on a
+# runner. It has now bitten inspect-build.sh, patch-vm-interrupt.sh and test-patch-verify.sh, and
+# each time it was invisible locally, which is why it is a rule rather than a fourth fix
+while IFS= read -r script; do
+	count=$((count + 1))
+	bad="$(grep -nE 'mktemp[^|;&]*-t[[:space:]]+[^[:space:]|;&)]+' "$script" | grep -v 'XXXXXX' || true)"
+	if [ -z "$bad" ]; then
+		echo "  ok   $script (no macOS-only mktemp template)"
+	else
+		failed=$((failed + 1))
+		echo "  FAIL $script -- mktemp -t template needs XXXXXX or GNU mktemp refuses it:"
+		printf '         %s\n' "$bad"
+	fi
+done < <(find src tools -name '*.sh')
+
 rm -f /tmp/lint-shell.err
 printf '\n%d file%s checked, %d failed\n' "$count" "$([ "$count" = 1 ] || echo s)" "$failed"
 [ "$failed" = 0 ] || exit 1
