@@ -293,6 +293,15 @@ jobs:
           fi
           bash src/fetch-deps.sh "$PHP_WASM_DIR" $ICONV
 
+      - name: Retype vrzno for the LP64 ABI
+        run: |
+          if grep -q 'MEMORY64=1' "$RC"; then
+            PHP_VERSION="$PHP_VERSION" bash src/patch-vrzno-lp64.sh "$PHP_WASM_DIR"
+            PHP_VERSION="$PHP_VERSION" bash src/patch-vrzno-lp64.sh "$PHP_WASM_DIR" --verify
+          else
+            echo "rc is wasm32, leaving vrzno's ILP32 call sites intact"
+          fi
+
       - name: Enlarge Swap for the LTO Link
         run: |
           echo "before:"
@@ -329,6 +338,17 @@ jobs:
         with:
           path: /tmp/emsdk-cache
           key: ${{ steps.emsdk-cache.outputs.cache-primary-key }}
+
+      - name: Fix emscripten's MEMORY64 Glue Defects
+        run: |
+          if grep -q 'MEMORY64=1' "$RC"; then
+            GLUE="$PHP_WASM_DIR/packages/php-wasm-web/php${PHP_VERSION}-worker.mjs"
+            [ -f "$GLUE" ] || GLUE="$(find "$PHP_WASM_DIR" -name "php${PHP_VERSION}-worker.mjs" -print -quit)"
+            node src/patch-lp64-glue.mjs "$GLUE"
+            node src/patch-lp64-glue.mjs "$GLUE" --verify
+          else
+            echo "rc is wasm32, emscripten's memory64 glue defects do not apply"
+          fi
 
       - name: Inspect and Assert the Artifact
         run: |
