@@ -20,8 +20,35 @@
 # variable. The same grep drives src/fetch-deps.sh, because linking a wasm64
 # php-src against a warm wasm32 libxml2.a fails at wasm-ld hours in.
 #
-# .rc.pending, so no push pays for it: this has never linked. Build it with
-# workflow_dispatch variant=wasm64, and rename it to wasm64.rc once it does.
+# IT LINKS. Run 32690008621, build (wasm64) success in 11m38s. Only the notify
+# job failed, correctly: CONSUMER_VARIANTS is control85 and this run published
+# wasm64. Renaming to wasm64.rc is a matter of whether it should cost a push,
+# not of whether it builds.
+#
+# THE SIZE OBJECTION IS DEAD, MEASURED RATHER THAN MODELLED. raw 12,563,711
+# against wasm32's 12,218,393 (+345,318, +2.83%), and at the shipping
+# --ultra -22 that is 2,720,787 against 2,659,563: +61,224 zstd bytes into
+# 220,027 of headroom, so it fits with ~158,803 to spare. The data section grows
+# 3,011,523 -> 3,103,484, +3.05%.
+#
+# WHAT ACTUALLY REFUSES IT IS VRZNO, NOT MEMORY. Measured by pointing the
+# consumer's vitest seam at this binary (DRUPFLARE_ABI=wasm64), in two steps:
+#
+#   1. emscripten's toIndexType feature-probes with
+#      new WebAssembly.Memory({initial:1n,index:"i64"}), which workerd REFUSES,
+#      so it silently degrades to the identity and every wasmTable.get() throws
+#      "Cannot convert <n> to a BigInt". This is a false negative in the probe,
+#      not a missing capability: replacing that IIFE with `i=>BigInt(i)` in the
+#      glue gets past it, and the glue is JavaScript, so it costs no rebuild.
+#   2. Past it, PHP starts (_pib_init returns) and vrzno fails the same way at
+#      _vrzno_expose_create_object_for_target. Its embedded JS declares pointer
+#      arguments as ccall argType "number" -- true under ILP32 and a lie under
+#      LP64 -- across 59 Module.ccall sites. Porting those is the remaining work
+#      and it lives in php-wasm's vrzno, not in this file.
+#
+# So the open question is no longer "does a Drupal heap fit at 64-bit zend_long".
+# That measurement is still unmade, and it CANNOT be made until vrzno marshals
+# pointers correctly, because every Host::call goes through it.
 
 PHP_VERSION=8.5
 
