@@ -56,6 +56,9 @@ esac
 COMPILE_FLAGS=
 grep -q 'SUPPORT_LONGJMP=wasm' "$RC" && COMPILE_FLAGS="$COMPILE_FLAGS -sSUPPORT_LONGJMP=wasm"
 grep -q 'MEMORY64=1' "$RC" && COMPILE_FLAGS="$COMPILE_FLAGS -sMEMORY64=1"
+# Zend/zend_long.h sets ZEND_ENABLE_ZVAL_LONG64 from compiler predefines and derives
+# SIZEOF_ZEND_LONG from it; no configure macro is involved, so a -D is the whole mechanism
+grep -q 'ZEND_LONG64=1' "$RC" && COMPILE_FLAGS="$COMPILE_FLAGS -DZEND_ENABLE_ZVAL_LONG64=1"
 if [ -n "$COMPILE_FLAGS" ]; then
 	# a caller-supplied MAKE_EXTRA wins, so an explicit override is still possible
 	MAKE_EXTRA="${MAKE_EXTRA:-EXTRA_CFLAGS=${COMPILE_FLAGS# }}"
@@ -70,6 +73,9 @@ fi
 # and is not host-writable on a Linux runner, which is the same trap that broke two patch scripts.
 ABI=wasm32
 grep -q 'MEMORY64=1' "$RC" && ABI=wasm64
+# a long64 arm is wasm32 by pointer width and NOT by object layout: zend_long is 8 bytes, so every
+# object differs and a tree compiled for plain wasm32 must not be reused
+grep -q 'ZEND_LONG64=1' "$RC" && ABI="${ABI}-long64"
 ABI_STAMP="$SRC/.php-wasm-abi"
 WAS="$(cat "$ABI_STAMP" 2> /dev/null || echo wasm32)"
 if [ "$WAS" != "$ABI" ]; then
@@ -78,7 +84,8 @@ if [ "$WAS" != "$ABI" ]; then
 fi
 printf '%s\n' "$ABI" > "$ABI_STAMP"
 MEMORY64=0
-[ "$ABI" = wasm64 ] && MEMORY64=1
+# read from the rc rather than from $ABI, which now carries a long64 suffix as well
+grep -q 'MEMORY64=1' "$RC" && MEMORY64=1
 export MEMORY64
 
 PHP_SRC="$SRC/third_party/php${PHP_VERSION}-src"

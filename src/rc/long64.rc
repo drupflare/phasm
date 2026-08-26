@@ -1,0 +1,78 @@
+# control85.rc with 64-bit zend_long on 32-bit pointers, and nothing else changed.
+#
+# It answers ONE question wasm64 cannot: what does PHP_INT_SIZE=8 cost when the
+# POINTERS stay 4 bytes. wasm64 buys the same integer width and pays for it in
+# every pointer too -- Bucket 24->32, zend_string 20->32, HashTable 44->56,
+# zend_object 48->56, for a measured +16.2% blended and 5.00 MiB of margin
+# against the 128 MiB isolate. This arm should grow only the hash-bearing
+# structs. How much less is the whole decision and nobody has measured it.
+#
+# DO NOT restate the old pitch that this is "nearly free because zval is 16 on
+# both targets". zval does stay 16, and Bucket still goes 24 -> 32: zend_ulong
+# is typedef'd from zend_long and both Bucket and zend_string carry a
+# zend_ulong h, so widening either the hash or the pointer alone produces 32.
+# Modelled with a real compiler before this file existed.
+#
+# THE FLAG IS A COMPILE FLAG AND NOTHING ELSE. Zend/zend_long.h is the sole
+# authority: it sets ZEND_ENABLE_ZVAL_LONG64 from compiler predefines
+# (__x86_64__, __LP64__, _LP64, _WIN64) and DERIVES SIZEOF_ZEND_LONG from it.
+# Neither configure.ac nor Zend/Zend.m4 mentions either macro, so there is no
+# generated header to patch. On wasm32 none of those predefines is set, so the
+# guard does not fire and a -D on the command line stands.
+#
+# Makefile:209 clears EXTRA_CFLAGS after this file is included, so the flag
+# cannot live here; src/build-variant.sh greps for the marker below and
+# passes -DZEND_ENABLE_ZVAL_LONG64=1 as a make command-line variable.
+#
+# Score it with worker/scripts/measure/growth-ladder.ts on the AUTHENTICATED
+# render. A plain render reads 96.00 MiB on every arm and answers nothing.
+
+# ZEND_LONG64=1
+
+PHP_VERSION=8.5
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=static
+WITH_XML=static
+WITH_YAML=static
+WITH_ZLIB=static
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_ICONV=0
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+# opcache is compiled in; file_cache_only is set at runtime from the worker ini
+CONFIGURE_FLAGS+= --enable-opcache
