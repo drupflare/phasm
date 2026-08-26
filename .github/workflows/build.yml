@@ -19,7 +19,9 @@ on:
           - control85
           - min85
           - trim85
+          - nopdo85
           - noopcache85
+          - mergefunc85
           - mbstring
           - nolto
           - jspi

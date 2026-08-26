@@ -35,13 +35,16 @@ which makes `MAIN_MODULE=0` the only shape that works and turns the extension se
 **budget decision** rather than a preference:
 
 - `gd` costs **684,821 bytes**, so images are resized at delivery instead.
-- Real `mbstring` costs **584,856 bytes gzipped** on this tree, which puts the bundle over
-  Cloudflare's 3 MB free ceiling on its own. Measured: `static-mbstring` 3,342,549 against
-  `static-o2` 2,757,693 (wasm, gzipped).
+- Real `mbstring` costs **586,648 bytes gzipped**, which is more headroom than the consumer has.
 
-The variant list below exists because of that second number. The extension set has
-moved a free-tier verdict by 586,923 bytes and a boot figure by 241 ms, so "which
-extensions" is not a question you answer once.
+The variant list below exists because of that second number. The extension set has moved a
+free-tier verdict by 586,923 bytes and a boot figure by 241 ms, so "which extensions" is not a
+question you answer once.
+
+**Gzip is a comparator here, not the ceiling test.** The consumer ships the binary as a zstd frame
+inflated at module scope, so what Cloudflare measures is a stream it cannot compress further, and a
+variant's gzip total no longer decides whether it fits. `inspect-build.sh` reports gzip because it
+is the figure every build can be compared on without a compressor in the loop.
 
 `build-static.sh` verifies the outcome rather than trusting the flag: a `dylink.0` section
 in the first 16 bytes means `MAIN_MODULE=0` did not take, and it says so.
@@ -79,33 +82,44 @@ configuration, not a diff, because the php-wasm
 silently ignored once that stamp exists**, so matching the tree's own `config.nice` is
 mandatory rather than cosmetic.
 
+**`long64` is the variant that ships.** It is `control85` plus a single compile flag,
+`-DZEND_ENABLE_ZVAL_LONG64=1`, which gives `PHP_INT_SIZE` 8 on wasm32 pointers. `Zend/zend_long.h`
+sets that macro from compiler predefines and derives `SIZEOF_ZEND_LONG` from it, so no generated
+header is patched and no configure variable is involved; on wasm32 none of those predefines fires,
+which is why a `-D` on the command line stands. `Makefile:209` clears `EXTRA_CFLAGS` after the rc is
+included, so `build-variant.sh` passes it as a make variable and stamps the ABI as its own.
+
 | Variant       | What it is                                      | Note                                                                                               |
 | ------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `control`     | reproduces the shipping build                   | reconstructed from the `CONFIGURE_COMMAND` string PHP compiles into the binary                     |
+| `long64`      | `control85` with 64-bit `zend_long`             | **the shipping build.** `PHP_INT_SIZE` 8 for +16,181 raw bytes over `control85`                    |
+| `control`     | the 8.3 baseline the project started from       | reconstructed from the `CONFIGURE_COMMAND` string PHP compiles into the binary                     |
 | `control84`   | `control` at PHP 8.4                            | the midpoint that separates version drift from the 8.5 `ext/uri` + `ext/lexbor` bulk               |
 | `control85`   | `control` at PHP 8.5                            | the version Drupal 12 requires; `ext/uri` and `ext/lexbor` cannot be turned off from an rc         |
-| `iconv`       | `control` plus the real iconv extension         | **measured and rejected**: +655,677 gzip, 386,808 OVER the free ceiling, and no `mb_substr()` fix  |
-| `mbstring`    | `control` plus the real mbstring extension      | the actual `mb_substr()` fix, and the one that breaks the free-tier budget                         |
+| `mbstring`    | `control` plus the real mbstring extension      | the actual `mb_substr()` fix, at +586,648 gzipped                                                  |
+| `mergefunc85` | `control85` plus LLVM `-mergefunc` at LTO time  | reaches the link through `LTO_FLAG`, the one rc-settable variable that lands there                 |
 | `nolto`       | `control` with LTO removed, `-O2` held constant | isolates what LTO is worth; see below                                                              |
-| `jspi`        | `control` plus JSPI plus the VM interrupt patch | the shippable shape: no mbstring, so it fits                                                       |
-| `jspimb`      | `mbstring` plus JSPI                            | carries the mbstring fix and is over the free ceiling                                              |
+| `jspi`        | `control` plus JSPI plus the VM interrupt patch | JSPI is closed as a shipping route; the arm stays because the patch is what it proves              |
+| `jspimb`      | `mbstring` plus JSPI                            | carries the mbstring fix and the mbstring cost                                                     |
 | `jspisjlj`    | `jspi` plus wasm SjLj                           | the variant that can actually suspend from inside PHP                                              |
 | `jspimbsjlj`  | `jspimb` plus wasm SjLj                         | plain `-sJSPI` measured **broken** without it; see below                                           |
 | `min85`       | 8.5 with only `dom`, `libxml2` and `vrzno`      | not shippable; it bounds how much of the ceiling the unavoidable extensions leave                  |
 | `trim85`      | `control85` minus `yaml` and `zlib`             | needs the fflate bridge in the consumer before it can ship                                         |
-| `nopdo85`     | `control85` minus `ext-pdo`                     | needs `drupflare/rom`'s userland `PDO` in the deployed tree first                                  |
+| `nopdo85`     | `control85` minus `ext-pdo`                     | there is no `WITH_PDO` knob; php-wasm hardcodes `--enable-pdo`, so this drops it another way       |
 | `noopcache85` | `min85` with `ext/opcache` dropped              | 8.5 removed the disable flag, so it takes a source patch; no symbol stub is needed on an NTS build |
 
-**`iconv` is rejected.** `static-iconv` is **3,532,536 bytes** gzipped against `control`'s
-2,876,859: a cost of **655,677**, landing **386,808 over the 3,145,728 free ceiling**. That is
-within 9% of what real `mbstring` costs (586,923), and it does not fix `mb_substr()`.
+Two more exist as `.rc.pending`. The extension is what keeps them out of the matrix: `plan` discovers
+variants with `find src/rc -name '*.rc'`, and a subdirectory would not work, since that find recurses.
 
-`src/rc/nolexbor85.rc.pending` is deliberately NOT in the matrix. `plan` discovers variants with
-`find src/rc -name '*.rc'`, so the extension is what keeps it out; a subdirectory would not, since
-that find recurses. It stays pending because dropping lexbor's HTML half needs a source patch to
-`ext/dom/php_dom.c`, its arginfo header and `element.c` -- the `config.m4` deletions alone leave 21
-symbols undefined, so `src/patch-drop-lexbor-html.sh` refuses by default rather than producing a
-tree that cannot link.
+- **`wasm64`** is `control85` with the ABI changed and nothing else, so pointer width is the only
+  variable. It builds and runs, and `long64` reaches the same `PHP_INT_SIZE` for 21x fewer raw bytes
+  and four times the heap margin. Measured against `control85` it is also about 3% slower.
+- **`nolexbor85`** needs a source patch to `ext/dom/php_dom.c`, its arginfo header and `element.c`;
+  the `config.m4` deletions alone leave 21 symbols undefined, so `src/patch-drop-lexbor-html.sh`
+  refuses by default rather than producing a tree that cannot link.
+
+**`iconv` was built, measured and removed.** It cost **655,677 gzipped bytes** against `control`,
+within 9% of what real `mbstring` costs, and it does not fix `mb_substr()`. Its rc is gone; the
+measurement is kept here so it is not proposed again.
 
 **`nolto` carries `LTO_FLAG=-O2` rather than an empty value.** `-O${OPTIMIZE}` reaches only the
 link flags, so `LTO_FLAG` is the sole optimization in the compile half (php-wasm `Makefile:404`,
@@ -155,11 +169,22 @@ mentions `SUPPORT_LONGJMP=wasm`, because forgetting it is a multi-hour mistake.
 
 ## 🚀 Building Locally
 
+The shipping build needs no source patch and no extra make variables:
+
 ```sh
 # pin the compiler before anything compiles; compose asks for an untagged image name
 bash ~/phasm/src/pin-builder-image.sh
 
 git clone https://github.com/seanmorris/php-wasm /tmp/phpwasm-build/php-wasm
+cd ~/phasm
+bash src/build-variant.sh long64 /tmp/phpwasm-build/php-wasm
+
+bash src/inspect-build.sh vendor/static-long64 --expect-static
+```
+
+A variant carrying the VM interrupt patch takes two more steps, and their order is not stylistic:
+
+```sh
 cd /tmp/phpwasm-build/php-wasm
 
 # fetch and patch php-src, putting Zend/zend_execute.c on disk
@@ -175,11 +200,10 @@ MAKE_EXTRA='EXTRA_CFLAGS=-sSUPPORT_LONGJMP=wasm' \
 bash src/inspect-build.sh vendor/static-jspisjlj --expect-static --expect-jspi --expect-slice
 ```
 
-Ordering is not stylistic: `patch-vm-interrupt.sh` edits
-`third_party/php8.3-src/Zend/zend_execute.c`, so the source tree has to exist first. The
-`patched` target (php-wasm `Makefile:251`) is the step that clones php-src and applies
-php-wasm's own patch. If you get the order wrong the patch script exits 1 with
-`no zend_execute.c at ...` rather than quietly producing an unpatched binary.
+`patch-vm-interrupt.sh` edits `Zend/zend_execute.c` under the source tree the rc's `PHP_VERSION`
+selects, so that tree has to exist first. The `patched` target (php-wasm `Makefile:251`) is the step
+that clones php-src and applies php-wasm's own patch. If you get the order wrong the patch script
+exits 1 with `no zend_execute.c at ...` rather than quietly producing an unpatched binary.
 
 `build-variant.sh` **refuses to overwrite an existing build**. Each `vendor/static-*` directory
 takes hours to produce, and a discarded one cannot be reproduced without repeating that.
@@ -189,18 +213,18 @@ takes hours to produce, and a discarded one cannot be reproduced without repeati
 ## 🔍 Inspecting a Build
 
 ```sh
-bash src/inspect-build.sh vendor/static-o2
+bash src/inspect-build.sh vendor/static-long64
 ```
 
 ```txt
-build:            vendor/static-o2
-wasm:             php8.3-worker.mjs.wasm  raw=9281983  gzip=2757693
-glue:             php8.3-worker.mjs  raw=823573  gzip=119162
-gzip total:       2876855  (free ceiling 3145728, paid 10485760)
+build:            vendor/static-long64
+wasm:             php8.5-worker.mjs.wasm  raw=12234574  gzip=3571885
+glue:             php8.5-worker.mjs  raw=865849  gzip=115245
+gzip total:       3687130  (free ceiling 3145728, paid 10485760)
 statically linked: yes
 jspi:             no
 slice exports:    none
-php version:      8.3.11
+php version:      8.5.2
 configure tail:   '--disable-fiber-asm' ... '--enable-opcache' '--enable-vrzno' ...
 ```
 
@@ -218,7 +242,7 @@ nothing is guessed:
 | `--expect-jspi`   | the glue wraps nothing in `WebAssembly.Suspending` / `.promising`           |
 | `--expect-slice`  | the glue has no `_zend_wasm_slice_*`, meaning the VM interrupt patch missed |
 
-Run over the nine builds in the consumer's `vendor/`, that is the table
+Run over the nine 8.3-generation builds in the consumer's `vendor/`, that is the table
 `TECHNICAL_REPORT.md` had to assemble by hand:
 
 | Build                | gzip total (wasm + glue) | JSPI | Slice exports |
