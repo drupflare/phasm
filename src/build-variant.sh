@@ -54,16 +54,34 @@ esac
 # rather than in build.yml so a local build is the same build CI runs -- it was only in the workflow,
 # which meant a local `build-variant.sh jspisjlj` silently compiled without -sSUPPORT_LONGJMP=wasm.
 COMPILE_FLAGS=
+LINK_FLAGS=
 grep -q 'SUPPORT_LONGJMP=wasm' "$RC" && COMPILE_FLAGS="$COMPILE_FLAGS -sSUPPORT_LONGJMP=wasm"
 grep -q 'MEMORY64=1' "$RC" && COMPILE_FLAGS="$COMPILE_FLAGS -sMEMORY64=1"
 # Zend/zend_long.h sets ZEND_ENABLE_ZVAL_LONG64 from compiler predefines and derives
 # SIZEOF_ZEND_LONG from it; no configure macro is involved, so a -D is the whole mechanism
 grep -q 'ZEND_LONG64=1' "$RC" && COMPILE_FLAGS="$COMPILE_FLAGS -DZEND_ENABLE_ZVAL_LONG64=1"
-if [ -n "$COMPILE_FLAGS" ]; then
+# -mbulk-memory is an LLVM TARGET FEATURE, so it has to be on the compile line for every object;
+# putting it only on the link leaves each object already lowered to a libc memcpy call
+grep -q 'BULK_MEMORY=1' "$RC" && {
+	COMPILE_FLAGS="$COMPILE_FLAGS -mbulk-memory"
+	LINK_FLAGS="$LINK_FLAGS -mbulk-memory"
+}
+# MALLOC picks the allocator implementation, which is compiled INTO the output, so both halves
+grep -q 'MALLOC=emmalloc' "$RC" && {
+	COMPILE_FLAGS="$COMPILE_FLAGS -sMALLOC=emmalloc"
+	LINK_FLAGS="$LINK_FLAGS -sMALLOC=emmalloc"
+}
+# IMPORTED_MEMORY is link-only: it changes who CREATES the WebAssembly.Memory, not how code
+# addresses it
+grep -q 'IMPORTED_MEMORY=1' "$RC" && LINK_FLAGS="$LINK_FLAGS -sIMPORTED_MEMORY=1"
+if [ -n "$COMPILE_FLAGS" ] || [ -n "$LINK_FLAGS" ]; then
+	DERIVED=
+	[ -n "$COMPILE_FLAGS" ] && DERIVED="EXTRA_CFLAGS=${COMPILE_FLAGS# }"
+	[ -n "$LINK_FLAGS" ] && DERIVED="$DERIVED EXTRA_FLAGS=${LINK_FLAGS# }"
 	# a caller-supplied MAKE_EXTRA wins, so an explicit override is still possible
-	MAKE_EXTRA="${MAKE_EXTRA:-EXTRA_CFLAGS=${COMPILE_FLAGS# }}"
+	MAKE_EXTRA="${MAKE_EXTRA:-${DERIVED# }}"
 	export MAKE_EXTRA
-	echo "compile-half flags for $VARIANT: $MAKE_EXTRA"
+	echo "derived flags for $VARIANT: $MAKE_EXTRA"
 fi
 
 # wasm64 changes the ABI of every object, so a tree configured for wasm32 cannot be reused: the
@@ -76,6 +94,10 @@ grep -q 'MEMORY64=1' "$RC" && ABI=wasm64
 # a long64 arm is wasm32 by pointer width and NOT by object layout: zend_long is 8 bytes, so every
 # object differs and a tree compiled for plain wasm32 must not be reused
 grep -q 'ZEND_LONG64=1' "$RC" && ABI="${ABI}-long64"
+# same reasoning one level down: both of these change emitted code in every object, so a tree
+# compiled without them cannot be relinked into an arm that has them
+grep -q 'BULK_MEMORY=1' "$RC" && ABI="${ABI}-bulkmem"
+grep -q 'MALLOC=emmalloc' "$RC" && ABI="${ABI}-emmalloc"
 ABI_STAMP="$SRC/.php-wasm-abi"
 WAS="$(cat "$ABI_STAMP" 2> /dev/null || echo wasm32)"
 if [ "$WAS" != "$ABI" ]; then

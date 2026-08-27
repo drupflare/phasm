@@ -1,0 +1,82 @@
+# long64.rc plus the wasm bulk-memory feature, and nothing else changed.
+#
+# THE SHIPPING BINARY IS BUILT WITHOUT IT, and that was found by reading the
+# import section rather than the build flags: php8.5.wasm imports
+# `env._emscripten_memcpy_js`, which emscripten emits ONLY when it cannot lower
+# a memcpy to `memory.copy`. So every memcpy in PHP -- string copies, hash table
+# growth, zval copies, the request-boundary resets -- leaves wasm, calls into
+# JavaScript, and comes back.
+#
+# WHAT IT COSTS TODAY IS A CROSSING, NOT A BYTE LOOP. The JS side is
+# `HEAPU8.copyWithin(...)`, which is a native TypedArray method, so the bytes
+# move at memmove speed once the call lands. This arm is therefore about call
+# overhead and about small copies, where the crossing dominates the copy. Do not
+# score it as if the current path were quadratic; it is not.
+#
+# -mbulk-memory IS AN LLVM TARGET FEATURE, so it must be on the COMPILE line of
+# every object. Putting it only on the link leaves each object already lowered to
+# a libc memcpy call and the flag does nothing -- which would read as "bulk
+# memory does not help" rather than "bulk memory was not enabled".
+# src/build-variant.sh greps for the marker below and passes it to both halves.
+#
+# workerd supports bulk memory; it is part of the wasm 2.0 baseline and has been
+# shipping in V8 since 2021. The risk here is not the platform, it is whether
+# emscripten's own memcpy path is already fast enough that the crossing is
+# noise.
+#
+# Score it with worker/scripts/measure/abi-speed.ts against long64 as the
+# control, and read worker/scripts/measure/abi-control.ts FIRST: that harness
+# resolves about 0.5% blended, and an arm inside its own control is not a result.
+
+# BULK_MEMORY=1
+# the shipping ABI, held constant so this arm has exactly one variable against what
+# ships; without it the arm would silently be a wasm32 comparison
+# ZEND_LONG64=1
+
+PHP_VERSION=8.5
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=static
+WITH_XML=static
+WITH_YAML=static
+WITH_ZLIB=static
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_ICONV=0
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+# opcache is compiled in; file_cache_only is set at runtime from the worker ini
+CONFIGURE_FLAGS+= --enable-opcache

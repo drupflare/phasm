@@ -1,0 +1,81 @@
+# long64.rc with an IMPORTED memory, and nothing else changed.
+#
+# It exists to answer one question that could REMOVE a phase rather than shrink
+# one: can a heap snapshot be restored INTO the memory before instantiation,
+# instead of copied in after it.
+#
+# Today the order is instantiate, run the runtime's own initialisation, then copy
+# ~36 MB of snapshot over the top. With IMPORTED_MEMORY the JavaScript side owns
+# the WebAssembly.Memory BEFORE instantiation, so the order could become
+# allocate, populate, instantiate.
+#
+# WHAT MAKES IT PLAUSIBLE HERE SPECIFICALLY: the report measured 536 exported
+# globals and ZERO of them mutable. A normal VM checkpoint has to capture mutable
+# globals, a stack pointer and table state; with none of the exported globals
+# mutable, linear memory is far closer to being the whole state than it would be
+# for an arbitrary program.
+#
+# WHAT WOULD REFUTE IT, and this is the actual experiment: data segments and
+# `__wasm_call_ctors` run AT instantiation and would overwrite a pre-populated
+# image. This arm only provides the memory ownership; proving or refuting the
+# restore needs the consumer to try it and record WHICH of segments, ctors or
+# globals defeats it. A build that links is not a result.
+#
+# It also has a second, unrelated justification already on record: emscripten
+# owning the memory is what creates the detached-view mess on growth.
+#
+# IMPORTED_MEMORY is link-only -- it changes who CREATES the memory, not how code
+# addresses it -- so it does NOT stamp the ABI and a tree can be relinked into it.
+
+# IMPORTED_MEMORY=1
+# the shipping ABI, held constant so this arm has exactly one variable against what
+# ships; without it the arm would silently be a wasm32 comparison
+# ZEND_LONG64=1
+
+PHP_VERSION=8.5
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=static
+WITH_XML=static
+WITH_YAML=static
+WITH_ZLIB=static
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_ICONV=0
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+# opcache is compiled in; file_cache_only is set at runtime from the worker ini
+CONFIGURE_FLAGS+= --enable-opcache
