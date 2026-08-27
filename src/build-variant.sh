@@ -75,9 +75,13 @@ grep -q 'MALLOC=emmalloc' "$RC" && {
 # addresses it
 grep -q 'IMPORTED_MEMORY=1' "$RC" && LINK_FLAGS="$LINK_FLAGS -sIMPORTED_MEMORY=1"
 if [ -n "$COMPILE_FLAGS" ] || [ -n "$LINK_FLAGS" ]; then
+	# each value is QUOTED as one argument: an arm passing two compile flags produces
+	# `EXTRA_CFLAGS=-DX=1 -mbulk-memory`, and unquoted that hands make `-mbulk-memory` as an
+	# option rather than as part of the assignment. make answers with its usage and exit 2,
+	# which looks like a toolchain failure -- it killed the emmalloc and bulkmem arms
 	DERIVED=
-	[ -n "$COMPILE_FLAGS" ] && DERIVED="EXTRA_CFLAGS=${COMPILE_FLAGS# }"
-	[ -n "$LINK_FLAGS" ] && DERIVED="$DERIVED EXTRA_FLAGS=${LINK_FLAGS# }"
+	[ -n "$COMPILE_FLAGS" ] && DERIVED="EXTRA_CFLAGS='${COMPILE_FLAGS# }'"
+	[ -n "$LINK_FLAGS" ] && DERIVED="$DERIVED EXTRA_FLAGS='${LINK_FLAGS# }'"
 	# a caller-supplied MAKE_EXTRA wins, so an explicit override is still possible
 	MAKE_EXTRA="${MAKE_EXTRA:-${DERIVED# }}"
 	export MAKE_EXTRA

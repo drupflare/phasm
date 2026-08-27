@@ -160,10 +160,12 @@ export HOST_PROJECT_ROOT="$SRC"
 # place. Only safe for link-only settings (OPTIMIZE, LTO_FLAG, EXTRA_FLAGS);
 # anything reaching CONFIGURE_FLAGS is silently ignored once the stamp exists.
 #
-# MAKE_EXTRA is deliberately unquoted below: it carries make variable assignments that
-# have to word-split into separate arguments, and quoting it would hand make one empty
-# argument whenever it is unset.
-# shellcheck disable=SC2086
+# MAKE_EXTRA has to split into separate arguments, but a value can itself contain spaces
+# -- EXTRA_CFLAGS='-DX=1 -mbulk-memory' is one assignment, not two. Plain word splitting
+# broke exactly there: make read the second word as an option, printed its usage and
+# exited 2, which reads as a compiler failure and is a quoting bug. eval respects the
+# quotes the producer wrote; the input is this repo's own build scripts.
+eval "MAKE_ARGS=(${MAKE_EXTRA:-})"
 "$MAKE_BIN" worker-mjs \
 	PHP_BUILDER_DIR="$SRC" \
 	BUILD_TYPE=mjs \
@@ -172,7 +174,7 @@ export HOST_PROJECT_ROOT="$SRC"
 	ENV_FILE="$SRC/.php-wasm-rc" \
 	CPU_COUNT="$JOBS" \
 	MAX_LOAD=1000 \
-	${MAKE_EXTRA:-}
+	"${MAKE_ARGS[@]}"
 
 mkdir -p "$OUT"
 find . -maxdepth 2 -name '*.wasm' -newer .php-wasm-rc -exec cp {} "$OUT/" \; 2> /dev/null || true

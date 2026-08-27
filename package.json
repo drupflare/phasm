@@ -14,7 +14,7 @@
 		"prepare": "husky",
 		"prettier": "prettier --write .",
 		"prettier:check": "prettier --check .",
-		"test": "bash tools/test-patch-verify.sh && bash tools/test-vrzno-lp64.sh"
+		"test": "bash tools/test-patch-verify.sh && bash tools/test-vrzno-lp64.sh && bash tools/test-make-extra.sh"
 	},
 	"devDependencies": {
 		"husky": "^9.1.7",

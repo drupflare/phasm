@@ -1,0 +1,92 @@
+# long64.rc with Zend's memory manager switched back ON, and nothing else changed.
+#
+# PENDING because nothing here has been built. It needs src/patch-zend-alloc.sh
+# to find the upstream setting first, and that script fails loudly rather than
+# guessing -- rename to zendalloc.rc once it links.
+#
+# MEASURED ON THE SHIPPING BUILD, not inferred: PHP answers
+# getenv('USE_ZEND_ALLOC') === '0', so every emalloc goes straight to the system
+# allocator and zend_mm is out of the loop entirely. The string USE_ZEND_ALLOC=0
+# is in the .wasm data section, so it comes from upstream php-wasm rather than
+# from any rc in this repository. Zend's manager wants 2 MiB-aligned chunks from
+# mmap, which emscripten emulates poorly, so the default is defensible -- it has
+# simply never been re-scored.
+#
+# THREE THINGS ARE OFF BECAUSE OF THAT ONE FLAG, and each was recorded elsewhere
+# as its own unexplained platform quirk:
+#
+#   - memory_get_usage() reads 0, which is the "build property" the consumer's
+#     RULE 0 names. The counter lives in zend_mm and nothing increments it.
+#   - memory_limit IS NOT ENFORCED. The check is in the same allocator. An 8M cap
+#     holds 38 MB of strings with no error; the consumer asserts this.
+#   - the cycle collector never runs: gc_status() reports runs 0, collected 0.
+#
+# THE PRIZE IS AVAILABILITY, NOT SPEED, and that is what makes it worth an arm.
+# Today a runaway allocation does not stop at a catchable PHP fatal that loses one
+# request. It grows linear memory until workerd's 128 MiB ceiling refuses, and
+# emscripten turns that into exit(1) with nothing on stderr, which loses the whole
+# object and every session on it.
+#
+# SCORE IT ON: whether memory_limit actually stops an over-allocation, whether
+# memory_get_usage becomes non-zero, and then peak heap for the AUTHENTICATED
+# render -- which is the binding workload and where the consumer's margin is
+# 19.50 MiB. Zend's 2 MiB chunk granularity could spend that margin, so a higher
+# peak is the way this arm loses and it must be measured before anything ships.
+#
+# NOT A RUNTIME LEVER, unlike the growth step. Module.ENV is applied by the glue in
+# a preRun hook, but a probe variable set that way does not reach PHP's getenv at
+# all -- so either php-wasm drops the key or the C overwrites it, and which of the
+# two is UNDETERMINED. Do not write it down as settled without measuring it.
+
+# ZEND_ALLOC=1
+# the shipping ABI, held constant so this arm has exactly one variable against what
+# ships; without it the arm would silently be a wasm32 comparison
+# ZEND_LONG64=1
+
+PHP_VERSION=8.5
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=static
+WITH_XML=static
+WITH_YAML=static
+WITH_ZLIB=static
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_ICONV=0
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+# opcache is compiled in; file_cache_only is set at runtime from the worker ini
+CONFIGURE_FLAGS+= --enable-opcache
