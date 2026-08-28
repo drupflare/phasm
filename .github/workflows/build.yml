@@ -298,6 +298,15 @@ jobs:
           fi
           bash src/fetch-deps.sh "$PHP_WASM_DIR" $ICONV
 
+      - name: Re-enable Zend's Memory Manager
+        run: |
+          if grep -q 'ZEND_ALLOC=1' "$RC"; then
+            bash src/patch-zend-alloc.sh "$PHP_WASM_DIR"
+            bash src/patch-zend-alloc.sh "$PHP_WASM_DIR" --verify
+          else
+            echo "rc does not ask for Zend's allocator, leaving USE_ZEND_ALLOC as upstream sets it"
+          fi
+
       - name: Retype vrzno for the LP64 ABI
         run: |
           if grep -q 'MEMORY64=1' "$RC"; then

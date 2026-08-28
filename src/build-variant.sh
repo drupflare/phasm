@@ -102,6 +102,9 @@ grep -q 'ZEND_LONG64=1' "$RC" && ABI="${ABI}-long64"
 # compiled without them cannot be relinked into an arm that has them
 grep -q 'BULK_MEMORY=1' "$RC" && ABI="${ABI}-bulkmem"
 grep -q 'MALLOC=emmalloc' "$RC" && ABI="${ABI}-emmalloc"
+# the allocator is chosen inside php-src rather than by a flag, so a tree patched for it holds
+# different objects; without this a zendalloc build could be relinked from a stock tree
+grep -q 'ZEND_ALLOC=1' "$RC" && ABI="${ABI}-zendalloc"
 ABI_STAMP="$SRC/.php-wasm-abi"
 WAS="$(cat "$ABI_STAMP" 2> /dev/null || echo wasm32)"
 if [ "$WAS" != "$ABI" ]; then
