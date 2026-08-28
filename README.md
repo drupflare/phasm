@@ -34,7 +34,7 @@ not slowly, not at all. Every extension Drupal requires therefore has to be comp
 which makes `MAIN_MODULE=0` the only shape that works and turns the extension set into a
 **budget decision** rather than a preference:
 
-- `gd` costs **684,821 bytes**, so images are resized at delivery instead.
+- `gd` costs 684,821 bytes, so images are resized at delivery instead.
 - Real `mbstring` costs **586,648 bytes gzipped**, which is more headroom than the consumer has.
 
 The variant list below exists because of that second number. The extension set has moved a
@@ -258,7 +258,7 @@ Run over the nine 8.3-generation builds in the consumer's `vendor/`, that is the
 | `static`             | 6,345,097                | no   | none          |
 
 Two independent cross-checks that the recovery is right: `static-o2`'s wasm gzip of
-**2,757,693** is the figure `src/rc/jspi.rc` records, and its 2,876,855 total is the
+2,757,693 is the figure `src/rc/jspi.rc` records, and its 2,876,855 total is the
 figure `src/rc/control.rc` records. `static-jspisjljctl` reading JSPI-yes/slice-none is
 also exactly what a control for `jspisjlj` should look like.
 
