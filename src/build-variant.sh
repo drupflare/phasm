@@ -50,7 +50,7 @@ echo "building $VARIANT at PHP $PHP_VERSION"
 
 case "$VARIANT" in
 	vmgoto) VM_KIND=GOTO ;;
-	vmtailcall) VM_KIND=TAILCALL ;;
+	# NOT a VM_KIND regeneration; see the TAIL_CALL patch below for why
 	*) VM_KIND= ;;
 esac
 
@@ -76,14 +76,19 @@ grep -q 'BULK_MEMORY=1' "$RC" && {
 grep -q 'TAIL_CALL=1' "$RC" && {
 	COMPILE_FLAGS="$COMPILE_FLAGS -mtail-call"
 	LINK_FLAGS="$LINK_FLAGS -mtail-call"
-	# MEASURED against this emcc: __has_attribute(preserve_none) is 0 on wasm32 and musttail is 1.
-	# zend_vm_opcodes.h sets ZEND_OPCODE_HANDLER_CCONV to ZEND_PRESERVE_NONE under the TAILCALL
-	# kind, and zend_portability.h only defines that behind HAVE_PRESERVE_NONE -- so without this
-	# the macro expands to an undefined identifier and every handler fails to compile. Defining it
-	# EMPTY here selects the default calling convention and needs no php-src patch, because the
-	# header's own definition is `#ifdef HAVE_PRESERVE_NONE` and never fires on this target.
-	# It costs the register-pressure win; musttail, which is what emits return_call, is unaffected
-	COMPILE_FLAGS="$COMPILE_FLAGS -DZEND_PRESERVE_NONE="
+	# The SHIPPED zend_vm_execute.h already carries 4,926 _TAILCALL handlers, the macro definitions
+	# and 21 `#if ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL` guards: the kind is chosen at COMPILE time,
+	# not at generation time. Regenerating with ZEND_VM_GEN_KIND=5 is therefore WRONG and was tried
+	# -- the generator's macro-emission switch has cases for HYBRID and CALL only, so kind 5 matches
+	# nothing, emits no ZEND_OPCODE_HANDLER_RET / _ARGS / ZEND_VM_TAIL_CALL, and the handlers it
+	# does emit reference macros that no longer exist. CI failed with 20 `unknown type name` errors.
+	#
+	# So: leave the shipped header alone and satisfy the gate instead. Measured against this emcc,
+	# HAVE_MUSTTAIL and __clang__ hold while HAVE_PRESERVE_NONE and the arch test do not.
+	# HAVE_PRESERVE_NONE is supplied with an EMPTY ZEND_PRESERVE_NONE, which selects the default
+	# calling convention -- it costs the register-pressure win and leaves musttail, the half that
+	# emits return_call, untouched. The arch test needs the one-line patch below.
+	COMPILE_FLAGS="$COMPILE_FLAGS -DHAVE_PRESERVE_NONE=1 -DZEND_PRESERVE_NONE="
 }
 # MALLOC picks the allocator implementation, which is compiled INTO the output, so both halves
 grep -q 'MALLOC=emmalloc' "$RC" && {
@@ -141,6 +146,22 @@ export MEMORY64
 
 PHP_SRC="$SRC/third_party/php${PHP_VERSION}-src"
 ZEND="$PHP_SRC/Zend"
+# The arch half of the TAILCALL gate. Patched INSIDE the container: php-src is created there and is
+# not host-writable on a Linux runner, which is the trap that broke two earlier patch scripts.
+# Keyed on the patched SHAPE rather than a marker, and it re-runs harmlessly once already applied.
+if grep -q 'TAIL_CALL=1' "$RC"; then
+	GATE='#elif defined(HAVE_MUSTTAIL) \&\& defined(HAVE_PRESERVE_NONE) \&\& (defined(__x86_64__) || defined(__aarch64__)) \&\& defined(__clang__)'
+	WANT='#elif defined(HAVE_MUSTTAIL) \&\& defined(HAVE_PRESERVE_NONE) \&\& (defined(__x86_64__) || defined(__aarch64__) || defined(__wasm__)) \&\& defined(__clang__)'
+	docker run --rm -v "$PHP_SRC:/w" -w /w alpine:3 sh -c \
+		"grep -q '__wasm__' Zend/zend_vm_opcodes.h || sed -i 's|$GATE|$WANT|' Zend/zend_vm_opcodes.h"
+	docker run --rm -v "$PHP_SRC:/w" -w /w alpine:3 \
+		grep -q '__wasm__.*__clang__' Zend/zend_vm_opcodes.h || {
+		echo "the TAILCALL arch gate did not take; refusing to build a CALL binary named vmtailcall"
+		exit 1
+	}
+	echo "patched the TAILCALL arch gate to admit __wasm__"
+fi
+
 if [ -n "$VM_KIND" ]; then
 	# php-src is cloned BY the build, so on a tree that has never been built there is nothing to
 	# regenerate yet. Checked before the docker run rather than after: mounting a missing path

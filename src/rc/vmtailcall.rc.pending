@@ -42,10 +42,25 @@
 #     either way proves nothing about whether the arm did anything.
 #   - Whether it links. No wasm target has been built with these handlers.
 #
-# HOW THE KIND IS SELECTED: not by --with-vm-kind, which accepts only
-# CALL|SWITCH|GOTO|HYBRID and dies on anything else. src/build-variant.sh
-# pre-defines ZEND_VM_GEN_KIND=5 instead, which works because the generator
-# defaults it behind `if (!defined(...))`. No php-src patch is involved.
+# HOW THE KIND IS SELECTED: at COMPILE time, and NOT by regenerating the VM.
+# The shipped Zend/zend_vm_execute.h already carries 4,926 _TAILCALL handlers,
+# the macro definitions and 21 `#if ZEND_VM_KIND == ZEND_VM_KIND_TAILCALL`
+# guards, so the header supports every kind and the C preprocessor picks one.
+#
+# REGENERATING IS WRONG AND WAS TRIED. `--with-vm-kind=TAILCALL` is rejected
+# outright (that switch takes CALL|SWITCH|GOTO|HYBRID), and pre-defining
+# ZEND_VM_GEN_KIND=5 to get around it produces a BROKEN header: the generator's
+# macro-emission switch has cases for HYBRID and CALL only, so kind 5 matches
+# nothing and emits no ZEND_OPCODE_HANDLER_RET, _ARGS or ZEND_VM_TAIL_CALL while
+# still emitting handlers that use them. CI failed with 20 `unknown type name`
+# errors on Zend/zend_execute.c.
+#
+# So the arm satisfies the GATE instead. Zend/zend_vm_opcodes.h:45 reads
+#   defined(HAVE_MUSTTAIL) && defined(HAVE_PRESERVE_NONE)
+#     && (defined(__x86_64__) || defined(__aarch64__)) && defined(__clang__)
+# and measured against this emcc, HAVE_MUSTTAIL and __clang__ hold while the
+# other two do not. build-variant.sh supplies -DHAVE_PRESERVE_NONE=1 with an
+# empty -DZEND_PRESERVE_NONE=, and patches the arch test to admit __wasm__.
 #
 # WHY THE AUTO-SELECTION NEVER PICKS IT: Zend/zend_vm_opcodes.h gates TAILCALL
 # on `__x86_64__ || __aarch64__`. wasm32 is neither, so the shipped tree falls
