@@ -84,11 +84,12 @@ grep -q 'TAIL_CALL=1' "$RC" && {
 	# does emit reference macros that no longer exist. CI failed with 20 `unknown type name` errors.
 	#
 	# So: leave the shipped header alone and satisfy the gate instead. Measured against this emcc,
-	# HAVE_MUSTTAIL and __clang__ hold while HAVE_PRESERVE_NONE and the arch test do not.
-	# HAVE_PRESERVE_NONE is supplied with an EMPTY ZEND_PRESERVE_NONE, which selects the default
-	# calling convention -- it costs the register-pressure win and leaves musttail, the half that
-	# emits return_call, untouched. The arch test needs the one-line patch below.
-	COMPILE_FLAGS="$COMPILE_FLAGS -DHAVE_PRESERVE_NONE=1 -DZEND_PRESERVE_NONE="
+	# HAVE_MUSTTAIL and __clang__ hold while HAVE_PRESERVE_NONE and the arch test do not. Both of
+	# those are patched in the gate below rather than defined here: -DHAVE_PRESERVE_NONE=1 would make
+	# zend_portability.h define ZEND_PRESERVE_NONE as the attribute and REDEFINE this empty one, which
+	# is the opposite of what it was reaching for. Empty selects the default calling convention; it
+	# costs the register-pressure win and leaves musttail, the half that emits return_call, untouched.
+	COMPILE_FLAGS="$COMPILE_FLAGS -DZEND_PRESERVE_NONE="
 }
 # MALLOC picks the allocator implementation, which is compiled INTO the output, so both halves
 grep -q 'MALLOC=emmalloc' "$RC" && {
@@ -146,21 +147,37 @@ export MEMORY64
 
 PHP_SRC="$SRC/third_party/php${PHP_VERSION}-src"
 ZEND="$PHP_SRC/Zend"
-# The arch half of the TAILCALL gate. Patched INSIDE the container: php-src is created there and is
-# not host-writable on a Linux runner, which is the trap that broke two earlier patch scripts.
-# Keyed on the patched SHAPE rather than a marker, and it re-runs harmlessly once already applied.
+# Both halves of the TAILCALL gate that wasm32 fails. Patched INSIDE the container: php-src is
+# created there and is not host-writable on a Linux runner, which is the trap that broke two earlier
+# patch scripts. Keyed on the patched SHAPE rather than a marker, so a re-run is a no-op.
 if grep -q 'TAIL_CALL=1' "$RC"; then
-	# `@` as the delimiter, and the NARROWEST substring that identifies the gate. A `|` delimiter
+	# `@` as the delimiter, and the NARROWEST substring that identifies each half. A `|` delimiter
 	# collides with the `||` inside the condition -- sed answered "bad option in substitution
-	# expression" and the arm failed in 1.5 s
-	docker run --rm -v "$PHP_SRC:/w" -w /w alpine:3 sh -c \
-		"grep -q '__wasm__' Zend/zend_vm_opcodes.h || sed -i 's@defined(__aarch64__))@defined(__aarch64__) || defined(__wasm__))@' Zend/zend_vm_opcodes.h"
-	docker run --rm -v "$PHP_SRC:/w" -w /w alpine:3 \
-		grep -q '__wasm__.*__clang__' Zend/zend_vm_opcodes.h || {
-		echo "the TAILCALL arch gate did not take; refusing to build a CALL binary named vmtailcall"
-		exit 1
-	}
-	echo "patched the TAILCALL arch gate to admit __wasm__"
+	# expression" and the arm failed in 1.5 s. Both patterns occur exactly once in the file.
+	docker run --rm -v "$PHP_SRC:/w" -w /w alpine:3 sh -c "
+		grep -q 'defined(__aarch64__) || defined(__wasm__)' Zend/zend_vm_opcodes.h ||
+			sed -i 's@defined(__aarch64__))@defined(__aarch64__) || defined(__wasm__))@' Zend/zend_vm_opcodes.h
+		grep -q 'defined(HAVE_PRESERVE_NONE) || defined(__wasm__)' Zend/zend_vm_opcodes.h ||
+			sed -i 's@defined(HAVE_PRESERVE_NONE)@(defined(HAVE_PRESERVE_NONE) || defined(__wasm__))@' Zend/zend_vm_opcodes.h
+	"
+	# read the gate back and PRINT it on refusal. The first attempt asserted `__wasm__.*__clang__`,
+	# which the pinned php-8.5.2 tag cannot satisfy: `&& defined(__clang__)` was appended to that
+	# condition after the tag, so the patch had taken and the check was reading the branch head
+	GATE="$(docker run --rm -v "$PHP_SRC:/w" -w /w alpine:3 \
+		grep -m1 HAVE_MUSTTAIL Zend/zend_vm_opcodes.h || true)"
+	for want in 'defined(__aarch64__) || defined(__wasm__)' \
+		'(defined(HAVE_PRESERVE_NONE) || defined(__wasm__))'; do
+		case "$GATE" in
+			*"$want"*) ;;
+			*)
+				echo "the TAILCALL gate patch did not take: $want"
+				echo "  gate reads: $GATE"
+				echo "refusing to build a CALL binary named vmtailcall"
+				exit 1
+				;;
+		esac
+	done
+	echo "patched the TAILCALL gate to admit __wasm__: $GATE"
 fi
 
 if [ -n "$VM_KIND" ]; then

@@ -21,19 +21,20 @@
 # into the binary, which is the technique src/rc/control.rc documents.
 #
 # usage:
-#   src/inspect-build.sh <build-dir> [--expect-static] [--expect-jspi] [--expect-slice] [--expect-no-opcache]
+#   src/inspect-build.sh <build-dir> [--expect-static] [--expect-jspi] [--expect-slice] [--expect-no-opcache] [--expect-tailcall]
 #
 # The --expect flags turn the report into a gate: each one that does not hold is
 # printed as FAIL and the script exits 1.
 set -euo pipefail
 
-DIR="${1:?usage: inspect-build.sh <build-dir> [--expect-static] [--expect-jspi] [--expect-slice] [--expect-no-opcache]}"
+DIR="${1:?usage: inspect-build.sh <build-dir> [--expect-static] [--expect-jspi] [--expect-slice] [--expect-no-opcache] [--expect-tailcall]}"
 shift || true
 
 EXPECT_STATIC=0
 EXPECT_JSPI=0
 EXPECT_SLICE=0
 EXPECT_NO_OPCACHE=0
+EXPECT_TAILCALL=0
 EXPECT_RC=""
 for arg in "$@"; do
 	case "$arg" in
@@ -41,6 +42,7 @@ for arg in "$@"; do
 		--expect-jspi) EXPECT_JSPI=1 ;;
 		--expect-slice) EXPECT_SLICE=1 ;;
 		--expect-no-opcache) EXPECT_NO_OPCACHE=1 ;;
+		--expect-tailcall) EXPECT_TAILCALL=1 ;;
 		--expect-rc=*) EXPECT_RC="${arg#--expect-rc=}" ;;
 		*)
 			echo "unknown option: $arg"
@@ -93,6 +95,20 @@ if has_in_glue 'WebAssembly.Suspending' || has_in_glue 'WebAssembly.promising'; 
 	HAS_JSPI=1
 fi
 
+# TAIL CALLS, READ FROM THE OPCODES. Every other half of this arm can succeed while the binary
+# stays a CALL build: the gate patch proves the SOURCE says TAILCALL, `-mtail-call` proves the flag
+# was passed, and neither proves clang emitted `return_call` through the VM's dispatch, which is the
+# one thing the experiment is about. `strings` cannot see an opcode, so this needs a disassembler.
+TAILCALLS=unknown
+TAILCALLS_INDIRECT=unknown
+if command -v wasm-objdump > /dev/null 2>&1; then
+	DISASM="$(mktemp -t inspecttc.XXXXXX)"
+	wasm-objdump -d "$WASM" > "$DISASM" 2> /dev/null || true
+	TAILCALLS="$(grep -c 'return_call' "$DISASM" || true)"
+	TAILCALLS_INDIRECT="$(grep -c 'return_call_indirect' "$DISASM" || true)"
+	rm -f "$DISASM"
+fi
+
 SLICE_EXPORTS=''
 for export in arm mask stat raise; do
 	if has_in_glue "_zend_wasm_slice_${export}"; then
@@ -139,6 +155,7 @@ echo "statically linked: $([ "$IS_STATIC" = 1 ] && echo yes || echo 'NO -- dylin
 echo "jspi:             $([ "$HAS_JSPI" = 1 ] && echo yes || echo no)"
 echo "opcache:          $([ "$HAS_OPCACHE" = 1 ] && echo yes || echo 'no -- not registered')"
 echo "slice exports:    ${SLICE_EXPORTS:-none}"
+echo "return_call:      $TAILCALLS total, $TAILCALLS_INDIRECT indirect  (unknown = no wasm-objdump)"
 echo "php version:      ${PHP_VERSION:-unknown}"
 echo "configure tail:  ${EXTENSIONS:- (not recovered)}"
 
@@ -160,6 +177,28 @@ fi
 if [ "$EXPECT_NO_OPCACHE" = 1 ] && [ "$HAS_OPCACHE" != 0 ]; then
 	echo "FAIL: expected no opcache, but the binary still registers Zend OPcache -- the drop did not reach it"
 	FAILED=1
+fi
+if [ "$EXPECT_TAILCALL" = 1 ]; then
+	# `unknown` fails as well: a missing disassembler must not read as a satisfied assertion, which
+	# is how an arm gets published having proved nothing.
+	#
+	# Asserted on the INDIRECT form and not on the total. `-mtail-call` lets LLVM turn any ordinary
+	# tail position into `return_call`, so a CALL binary built with the flag would carry some of
+	# those too and a count threshold on the total would be a number nobody measured. The VM's
+	# dispatch goes through a function pointer, so TAILCALL is what produces
+	# `return_call_indirect`.
+	#
+	# THE CONTROL IS ZERO. The shipping long64 build disassembled the same way -- 3,850,451 lines --
+	# holds 0 return_call and 0 return_call_indirect, so any non-zero count here is a difference
+	# from what ships. That build carries no `-mtail-call`, so it does not settle how many the flag
+	# alone would produce; non-zero stays the floor rather than becoming a threshold.
+	if [ "$TAILCALLS_INDIRECT" = unknown ]; then
+		echo "FAIL: --expect-tailcall needs wasm-objdump on PATH and there is none"
+		FAILED=1
+	elif [ "$TAILCALLS_INDIRECT" -lt 1 ]; then
+		echo "FAIL: no return_call_indirect in the artifact -- the VM still dispatches by call/return"
+		FAILED=1
+	fi
 fi
 
 # The extension gate, and it exists because a build exited 0 while missing seven of them.

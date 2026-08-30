@@ -389,6 +389,10 @@ jobs:
           if grep -qE '^DROP_OPCACHE=1' "$RC"; then
             ARGS+=(--expect-no-opcache)
           fi
+          if grep -q 'TAIL_CALL=1' "$RC"; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq wabt
+            ARGS+=(--expect-tailcall)
+          fi
           echo "asserting: ${ARGS[*]}"
           bash src/inspect-build.sh "$OUT" "${ARGS[@]}" | tee /tmp/inspect.txt
 

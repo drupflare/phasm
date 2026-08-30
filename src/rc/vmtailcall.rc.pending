@@ -29,18 +29,31 @@
 # expands to an UNDEFINED IDENTIFIER on wasm32 and every handler fails with
 # "expected ';' after top level declarator" -- reproduced on the real macro
 # shape. src/build-variant.sh passes `-DZEND_PRESERVE_NONE=` for this arm, which
-# compiles clean and needs no php-src patch: zend_portability.h defines that
-# macro only behind HAVE_PRESERVE_NONE, which never fires here. The cost is the
-# register-pressure win; musttail is untouched and is what emits return_call.
+# compiles clean: zend_portability.h defines that macro only behind
+# HAVE_PRESERVE_NONE, which never fires here. The cost is the register-pressure
+# win; musttail is untouched and is what emits return_call.
+#
+# HAVE_PRESERVE_NONE IS NOT DEFINED TO GET PAST THE GATE, and defining it was
+# the first attempt. `-DHAVE_PRESERVE_NONE=1` makes zend_portability.h define
+# ZEND_PRESERVE_NONE as `__attribute__((preserve_none))` and REDEFINE the empty
+# command-line one, which is the opposite of what the flag was reaching for.
+# The gate is patched to admit __wasm__ on that half instead.
 #
 # WHAT IS STILL NOT VERIFIED:
 #
 #   - Whether clang emits the tail call THROUGH THE VM's dispatch. The probe
 #     above used a direct call; the VM tail-calls through a function pointer,
-#     which has to become return_call_indirect. Check the artifact with
-#     `wasm-objdump -d` for return_call, NOT with a benchmark: a few percent
-#     either way proves nothing about whether the arm did anything.
+#     which has to become return_call_indirect. src/inspect-build.sh answers
+#     this with `--expect-tailcall`: wasm-objdump over the artifact, counting
+#     return_call, wired in build.yml whenever the rc sets TAIL_CALL=1. NOT a
+#     benchmark -- a few percent either way proves nothing about whether the arm
+#     did anything, and every other half of the build can succeed while the
+#     binary stays CALL.
 #   - Whether it links. No wasm target has been built with these handlers.
+#
+# HAVE_MUSTTAIL IS VISIBLE AT THE GATE. zend_vm_opcodes.h includes
+# zend_portability.h itself, and that header is where `#if __has_attribute(
+# musttail)` defines it, so there is no include-ordering hole to fall through.
 #
 # HOW THE KIND IS SELECTED: at COMPILE time, and NOT by regenerating the VM.
 # The shipped Zend/zend_vm_execute.h already carries 4,926 _TAILCALL handlers,
@@ -55,12 +68,19 @@
 # still emitting handlers that use them. CI failed with 20 `unknown type name`
 # errors on Zend/zend_execute.c.
 #
-# So the arm satisfies the GATE instead. Zend/zend_vm_opcodes.h:45 reads
+# So the arm satisfies the GATE instead. On the tag php-wasm pins, php-8.5.2,
+# Zend/zend_vm_opcodes.h:45 reads
 #   defined(HAVE_MUSTTAIL) && defined(HAVE_PRESERVE_NONE)
-#     && (defined(__x86_64__) || defined(__aarch64__)) && defined(__clang__)
-# and measured against this emcc, HAVE_MUSTTAIL and __clang__ hold while the
-# other two do not. build-variant.sh supplies -DHAVE_PRESERVE_NONE=1 with an
-# empty -DZEND_PRESERVE_NONE=, and patches the arch test to admit __wasm__.
+#     && (defined(__x86_64__) || defined(__aarch64__))
+# and measured against this emcc, HAVE_MUSTTAIL holds while the other two do
+# not. build-variant.sh patches both to admit __wasm__ and supplies an empty
+# -DZEND_PRESERVE_NONE=.
+#
+# READ THE PINNED TAG, NOT THE BRANCH. PHP-8.5 head appends
+# `&& defined(__clang__)` to that condition; 8.5.2 has no such term, so a check
+# written against the branch asserted something the built tree could never say.
+# That is what failed run 33286797153 -- the patch had applied and the guard
+# refused it. Both shapes are patched identically now.
 #
 # WHY THE AUTO-SELECTION NEVER PICKS IT: Zend/zend_vm_opcodes.h gates TAILCALL
 # on `__x86_64__ || __aarch64__`. wasm32 is neither, so the shipped tree falls
