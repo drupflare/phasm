@@ -191,6 +191,17 @@ Every one of these has already been paid for once.
   from a BUILT tree's generated header, never by grepping the source: the first attempt matched
   `ZEND_VM_KIND_HYBRID` inside `#if (ZEND_VM_KIND == ZEND_VM_KIND_HYBRID)` and would have recorded the
   opposite of the truth.
+- **"Unreachable" above means unreachable by AUTO-SELECTION, and TAILCALL is forceable.** The gate is
+  a source condition, not a capability limit, and three things had to be checked before saying so:
+  wasm tail calls execute under V8 and eliminate stack growth (a hand-assembled `return_call` module
+  recursed 5,000,000 deep where the same module with a plain `call` blew the stack at 100,000),
+  workerd's `WebAssembly.validate()` accepts them, and 8.5's generator carries the backend as
+  `ZEND_VM_KIND_TAILCALL = 5`. **`--with-vm-kind=TAILCALL` does NOT work** -- that switch accepts only
+  `CALL|SWITCH|GOTO|HYBRID` and dies "Invalid vm kind" on anything else. `ZEND_VM_GEN_KIND` is
+  defaulted behind `if (!defined(...))`, so pre-defining it selects the kind with no php-src patch.
+  `src/rc/vmtailcall.rc.pending` is the arm; what is still unproven is whether it LINKS and whether
+  clang actually emits `return_call`, since the generator writes no `musttail` and the tail position
+  is ordinary C. Check the artifact with `wasm-objdump -d`, not with a benchmark.
 - **`WITH_SESSION=0` does not link**: `undefined symbol: ps_globals`, ext/session's globals struct,
   is referenced unconditionally. Core's `composer.json` requires `ext-session` anyway, so a variant
   without it could never ship even if it linked. Same for `filter`, `tokenizer` and `ctype`.

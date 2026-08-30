@@ -1,0 +1,108 @@
+# long64.rc with the Zend VM regenerated as ZEND_VM_KIND_TAILCALL, and nothing
+# else changed. It is long64 rather than control85 so the only difference from
+# the SHIPPING binary is the threading model.
+#
+# THE QUESTION: the interpreter currently dispatches every opcode through a
+# call/return into the VM machinery. A tail-call VM chains handler to handler
+# instead. Nothing in this repo has measured that on wasm.
+#
+# WHAT IS ALREADY VERIFIED, so the arm is worth the hours:
+#
+#   - wasm tail calls execute under V8 and DO eliminate stack growth: a
+#     hand-assembled return_call module recursed 5,000,000 deep and returned,
+#     where the same module using a plain call blew the stack at 100,000.
+#   - workerd accepts them. WebAssembly.validate() answers true for a
+#     return_call module in the workers lane.
+#   - PHP 8.5's zend_vm_gen.php carries the backend: ZEND_VM_KIND_TAILCALL = 5,
+#     with its own codegen branches and a _TAILCALL handler-name variant.
+#
+# THE VM GENERATES: `#define ZEND_VM_KIND ZEND_VM_KIND_TAILCALL` lands in
+# Zend/zend_vm_opcodes.h and zend_vm_execute.h carries 4,895 _TAILCALL handlers.
+# Verified on a real tree, which is the only place to read it from.
+#
+# WHAT IS NOT VERIFIED, and the first one is the likely killer:
+#
+# MEASURED against this emcc, before spending the hours:
+#   __has_attribute(preserve_none) = 0   __has_attribute(musttail) = 1
+#
+# So `ZEND_OPCODE_HANDLER_CCONV`, which is `ZEND_PRESERVE_NONE` under this kind,
+# expands to an UNDEFINED IDENTIFIER on wasm32 and every handler fails with
+# "expected ';' after top level declarator" -- reproduced on the real macro
+# shape. src/build-variant.sh passes `-DZEND_PRESERVE_NONE=` for this arm, which
+# compiles clean and needs no php-src patch: zend_portability.h defines that
+# macro only behind HAVE_PRESERVE_NONE, which never fires here. The cost is the
+# register-pressure win; musttail is untouched and is what emits return_call.
+#
+# WHAT IS STILL NOT VERIFIED:
+#
+#   - Whether clang emits the tail call THROUGH THE VM's dispatch. The probe
+#     above used a direct call; the VM tail-calls through a function pointer,
+#     which has to become return_call_indirect. Check the artifact with
+#     `wasm-objdump -d` for return_call, NOT with a benchmark: a few percent
+#     either way proves nothing about whether the arm did anything.
+#   - Whether it links. No wasm target has been built with these handlers.
+#
+# HOW THE KIND IS SELECTED: not by --with-vm-kind, which accepts only
+# CALL|SWITCH|GOTO|HYBRID and dies on anything else. src/build-variant.sh
+# pre-defines ZEND_VM_GEN_KIND=5 instead, which works because the generator
+# defaults it behind `if (!defined(...))`. No php-src patch is involved.
+#
+# WHY THE AUTO-SELECTION NEVER PICKS IT: Zend/zend_vm_opcodes.h gates TAILCALL
+# on `__x86_64__ || __aarch64__`. wasm32 is neither, so the shipped tree falls
+# through to CALL. That gate is a source condition and not a capability limit,
+# which is the whole premise of this arm.
+#
+# Score it against long64 on the AUTHENTICATED render, and report binary size,
+# cold boot, warm invocation CPU and peak memory alongside the render -- a VM
+# change moves all of them and a render figure alone hides a size regression.
+
+# TAIL_CALL=1
+# ZEND_LONG64=1
+
+PHP_VERSION=8.5
+
+MAIN_MODULE=0
+ASYNCIFY=0
+OPTIMIZE=2
+INITIAL_MEMORY=96MB
+
+WITH_VRZNO=1
+WITH_LIBXML=static
+WITH_DOM=static
+WITH_SIMPLEXML=static
+WITH_XML=static
+WITH_YAML=static
+WITH_ZLIB=static
+
+WITH_CTYPE=1
+WITH_FILTER=1
+WITH_SESSION=1
+WITH_TOKENIZER=1
+
+WITH_BCMATH=0
+WITH_CALENDAR=0
+WITH_EXIF=0
+
+WITH_ICONV=0
+WITH_MBSTRING=0
+WITH_ONIGURUMA=0
+WITH_SQLITE=0
+WITH_GD=0
+WITH_LIBPNG=0
+WITH_LIBJPEG=0
+WITH_FREETYPE=0
+WITH_LIBWEBP=0
+WITH_LIBZIP=0
+WITH_PHAR=0
+WITH_XMLREADER=0
+WITH_XMLWRITER=0
+WITH_INTL=0
+WITH_TIDY=0
+WITH_SDL=0
+WITH_OPENSSL=0
+WITH_PDO_PGLITE=0
+WITH_PDO_CFD1=0
+WITH_WAITLINE=0
+
+# opcache is compiled in; file_cache_only is set at runtime from the worker ini
+CONFIGURE_FLAGS+= --enable-opcache

@@ -30,6 +30,7 @@ on:
           - jspimbsjlj
           - wasm64
           - long64
+          - vmtailcall
       php_wasm_ref:
         description: 'seanmorris/php-wasm git ref (tag, branch or SHA). Recorded in the release notes'
         type: string

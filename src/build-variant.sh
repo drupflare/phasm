@@ -28,8 +28,12 @@ fi
 	echo "no rc file at $RC"
 	exit 1
 }
-[ -d "$SRC" ] || {
-	echo "no php-wasm checkout at $SRC"
+# the MAKEFILE, not the directory. `-d` passes against a tree docker left behind: a `-v` mount of a
+# path that does not exist creates it, so one failed regeneration turns $SRC into a stub that every
+# later run accepts and then fails inside, several minutes and one image pull later
+[ -f "$SRC/Makefile" ] || {
+	echo "no php-wasm checkout at $SRC (no Makefile there)"
+	echo "clone it first; a directory alone is not a checkout"
 	exit 1
 }
 compgen -G "$OUT/*.wasm" > /dev/null && {
@@ -46,6 +50,7 @@ echo "building $VARIANT at PHP $PHP_VERSION"
 
 case "$VARIANT" in
 	vmgoto) VM_KIND=GOTO ;;
+	vmtailcall) VM_KIND=TAILCALL ;;
 	*) VM_KIND= ;;
 esac
 
@@ -65,6 +70,20 @@ grep -q 'ZEND_LONG64=1' "$RC" && COMPILE_FLAGS="$COMPILE_FLAGS -DZEND_ENABLE_ZVA
 grep -q 'BULK_MEMORY=1' "$RC" && {
 	COMPILE_FLAGS="$COMPILE_FLAGS -mbulk-memory"
 	LINK_FLAGS="$LINK_FLAGS -mbulk-memory"
+}
+# same shape as -mbulk-memory and for the same reason: -mtail-call is an LLVM TARGET FEATURE, so an
+# object compiled without it is already lowered to an ordinary call and no link flag recovers it
+grep -q 'TAIL_CALL=1' "$RC" && {
+	COMPILE_FLAGS="$COMPILE_FLAGS -mtail-call"
+	LINK_FLAGS="$LINK_FLAGS -mtail-call"
+	# MEASURED against this emcc: __has_attribute(preserve_none) is 0 on wasm32 and musttail is 1.
+	# zend_vm_opcodes.h sets ZEND_OPCODE_HANDLER_CCONV to ZEND_PRESERVE_NONE under the TAILCALL
+	# kind, and zend_portability.h only defines that behind HAVE_PRESERVE_NONE -- so without this
+	# the macro expands to an undefined identifier and every handler fails to compile. Defining it
+	# EMPTY here selects the default calling convention and needs no php-src patch, because the
+	# header's own definition is `#ifdef HAVE_PRESERVE_NONE` and never fires on this target.
+	# It costs the register-pressure win; musttail, which is what emits return_call, is unaffected
+	COMPILE_FLAGS="$COMPILE_FLAGS -DZEND_PRESERVE_NONE="
 }
 # MALLOC picks the allocator implementation, which is compiled INTO the output, so both halves
 grep -q 'MALLOC=emmalloc' "$RC" && {
@@ -105,6 +124,9 @@ grep -q 'MALLOC=emmalloc' "$RC" && ABI="${ABI}-emmalloc"
 # the allocator is chosen inside php-src rather than by a flag, so a tree patched for it holds
 # different objects; without this a zendalloc build could be relinked from a stock tree
 grep -q 'ZEND_ALLOC=1' "$RC" && ABI="${ABI}-zendalloc"
+# the VM regeneration rewrites zend_vm_execute.h into a different handler shape, and -mtail-call
+# changes emitted code in every object; a tree compiled as CALL cannot be relinked into this
+grep -q 'TAIL_CALL=1' "$RC" && ABI="${ABI}-tailcall"
 ABI_STAMP="$SRC/.php-wasm-abi"
 WAS="$(cat "$ABI_STAMP" 2> /dev/null || echo wasm32)"
 if [ "$WAS" != "$ABI" ]; then
@@ -120,9 +142,27 @@ export MEMORY64
 PHP_SRC="$SRC/third_party/php${PHP_VERSION}-src"
 ZEND="$PHP_SRC/Zend"
 if [ -n "$VM_KIND" ]; then
+	# php-src is cloned BY the build, so on a tree that has never been built there is nothing to
+	# regenerate yet. Checked before the docker run rather than after: mounting a missing path
+	# CREATES it, so the failure would otherwise leave a stub behind that breaks the next run too
+	[ -f "$ZEND/zend_vm_gen.php" ] || {
+		echo "no $ZEND/zend_vm_gen.php; php-src is created by the build, so build this variant"
+		echo "once without a VM kind (or run the php-wasm 'patched' target) before regenerating"
+		exit 1
+	}
 	echo "regenerating the VM as ZEND_VM_KIND_${VM_KIND} under php:8.3-cli"
-	docker run --rm -v "$PHP_SRC:/w" -w /w/Zend php:8.3-cli \
-		php zend_vm_gen.php --with-vm-kind="$VM_KIND"
+	# TAILCALL is NOT reachable through --with-vm-kind: the flag's switch accepts only
+	# CALL|SWITCH|GOTO|HYBRID and everything else dies "Invalid vm kind". The generator DOES carry
+	# the backend (ZEND_VM_KIND_TAILCALL = 5, with its own codegen branches); only the argument
+	# parser omits it. `ZEND_VM_GEN_KIND` is defaulted behind `if (!defined(...))`, so pre-defining
+	# it selects the kind without patching php-src at all
+	if [ "$VM_KIND" = TAILCALL ]; then
+		docker run --rm -v "$PHP_SRC:/w" -w /w/Zend php:8.3-cli \
+			php -r 'define("ZEND_VM_GEN_KIND", 5); require "/w/Zend/zend_vm_gen.php";'
+	else
+		docker run --rm -v "$PHP_SRC:/w" -w /w/Zend php:8.3-cli \
+			php zend_vm_gen.php --with-vm-kind="$VM_KIND"
+	fi
 	grep -q "define ZEND_VM_KIND[[:space:]]*ZEND_VM_KIND_${VM_KIND}" "$ZEND/zend_vm_opcodes.h" \
 		|| {
 			echo "VM regeneration did not take; refusing to build"
