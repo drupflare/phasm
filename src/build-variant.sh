@@ -150,10 +150,11 @@ ZEND="$PHP_SRC/Zend"
 # not host-writable on a Linux runner, which is the trap that broke two earlier patch scripts.
 # Keyed on the patched SHAPE rather than a marker, and it re-runs harmlessly once already applied.
 if grep -q 'TAIL_CALL=1' "$RC"; then
-	GATE='#elif defined(HAVE_MUSTTAIL) \&\& defined(HAVE_PRESERVE_NONE) \&\& (defined(__x86_64__) || defined(__aarch64__)) \&\& defined(__clang__)'
-	WANT='#elif defined(HAVE_MUSTTAIL) \&\& defined(HAVE_PRESERVE_NONE) \&\& (defined(__x86_64__) || defined(__aarch64__) || defined(__wasm__)) \&\& defined(__clang__)'
+	# `@` as the delimiter, and the NARROWEST substring that identifies the gate. A `|` delimiter
+	# collides with the `||` inside the condition -- sed answered "bad option in substitution
+	# expression" and the arm failed in 1.5 s
 	docker run --rm -v "$PHP_SRC:/w" -w /w alpine:3 sh -c \
-		"grep -q '__wasm__' Zend/zend_vm_opcodes.h || sed -i 's|$GATE|$WANT|' Zend/zend_vm_opcodes.h"
+		"grep -q '__wasm__' Zend/zend_vm_opcodes.h || sed -i 's@defined(__aarch64__))@defined(__aarch64__) || defined(__wasm__))@' Zend/zend_vm_opcodes.h"
 	docker run --rm -v "$PHP_SRC:/w" -w /w alpine:3 \
 		grep -q '__wasm__.*__clang__' Zend/zend_vm_opcodes.h || {
 		echo "the TAILCALL arch gate did not take; refusing to build a CALL binary named vmtailcall"
