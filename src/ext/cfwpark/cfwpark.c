@@ -41,6 +41,7 @@ static zend_execute_data* saved_call;
 static zend_execute_data* saved_caller;
 static const zend_op* saved_opline;
 static zval* saved_ret;
+static zend_execute_data* saved_root;
 
 static int held = 0;
 static zend_execute_data* held_call;
@@ -50,6 +51,24 @@ static zval* held_ret;
 static zval* held_vm_stack_top;
 static zval* held_vm_stack_end;
 static zend_vm_stack held_vm_stack;
+/**
+ * The outermost frame of the parked chain, which is what a RESUMED chain stops the predicate on.
+ *
+ * `park_floor` cannot serve for a resume, and using it there was a crash rather than a wrong
+ * answer. The floor is the frame the host entered the VM at, and a resume enters from a DIFFERENT
+ * invocation
+ * -- while `held_caller->prev_execute_data` still points at the chain the first `cfw_park_run`
+ * built. So the walk never met the new floor: it went past the parked chain into the first
+ * invocation's
+ * `{main}`, whose frame had been popped and its VM stack slot reused, and followed
+ * `prev_execute_data` through whatever now occupied that memory. Measured on the shipping wasm
+ * build as `RuntimeError: memory access out of bounds`, and before that as a silent refusal --
+ * because a nonzero count from garbage reads exactly like an unsafe park.
+ *
+ * Set once per chain, by `cfw_park_run`. A resume must NOT recompute it: with the floor already at
+ * the root, the walk stops one frame short and would hand back a deeper frame each trip.
+ */
+static zend_execute_data* held_root;
 
 /* what the host has to perform before the chain can be resumed */
 static zend_string* pending_fn = NULL;
@@ -74,6 +93,23 @@ static int park_refused(zend_execute_data* call) {
 		ex = ex->prev_execute_data;
 	}
 	return unsafe;
+}
+
+/**
+ * The outermost frame between a trapped call and the floor; see {@link held_root}.
+ *
+ * Starts at `call` rather than at NULL so a park whose caller IS the floor answers its own frame.
+ * That cannot happen through `cfw_park_run` -- the eval frame always sits between -- and a root
+ * that defaults to the floor would hand a resume a stale pointer, which is the whole defect.
+ */
+static zend_execute_data* chain_root(zend_execute_data* call) {
+	zend_execute_data* ex = call ? call->prev_execute_data : NULL;
+	zend_execute_data* last = call;
+	while (ex && ex != park_floor) {
+		last = ex;
+		ex = ex->prev_execute_data;
+	}
+	return last;
 }
 
 static void clear_pending(void) {
@@ -135,6 +171,8 @@ static void ZEND_FASTCALL park_trap_handler(zend_execute_data* call, zval* ret) 
 	saved_caller = call->prev_execute_data;
 	saved_opline = saved_caller->opline;
 	saved_ret = ret;
+	/* while park_floor is still this chain's, which is the only point it can be computed from */
+	saved_root = chain_root(call);
 	longjmp(park_jmp, 1);
 }
 
@@ -234,6 +272,8 @@ PHP_FUNCTION(cfw_park_run) {
 	held_caller = saved_caller;
 	held_opline = saved_opline;
 	held_ret = saved_ret;
+	/* the chain's root, recorded once here and never recomputed on a resume */
+	held_root = saved_root;
 	held = 1;
 	RETURN_STRING("PARKED");
 }
@@ -250,7 +290,17 @@ PHP_FUNCTION(cfw_park_pending) {
 	add_assoc_zval(return_value, "args", &args);
 }
 
-/** Resumes the parked chain with the host's answer, from a separate VM entry. */
+/**
+ * Resumes the parked chain with the host's answer, from a separate VM entry.
+ *
+ * Answers `PARKED` again when the chain stops on a SECOND trapped call and `DONE` when it finishes,
+ * so the host drives one uniform loop: run -> (pending -> perform -> resume)* -> DONE.
+ *
+ * **RE-ARMS, and the first version did not.** Without arming here `park_armed` is 0 for the whole
+ * resume, so a multi-trip operation falls through to the real function on every trip after the
+ * first -- which is silent, because a fall-through is the refusal path and looks deliberate. One
+ * authenticated OIDC login is 3 trips, so only the first would have parked.
+ */
 PHP_FUNCTION(cfw_park_resume) {
 	zval* answer;
 	ZEND_PARSE_PARAMETERS_START(1, 1)
@@ -265,6 +315,7 @@ PHP_FUNCTION(cfw_park_resume) {
 	clear_pending();
 
 	zend_execute_data* host_ced = EG(current_execute_data);
+	JMP_BUF* outer_bailout = EG(bailout);
 	zend_vm_stack host_stack = EG(vm_stack);
 	zval* host_top = EG(vm_stack_top);
 	zval* host_end = EG(vm_stack_end);
@@ -285,14 +336,66 @@ PHP_FUNCTION(cfw_park_resume) {
 	}
 
 	held_caller->opline = held_opline + 1;
-	EG(current_execute_data) = held_caller;
-	execute_ex(held_caller);
 
+	/**
+	 * RELINK THE CHAIN'S ROOT TO THIS ENTRY, which is what a generator does and what this did not.
+	 *
+	 * `held_root->prev_execute_data` still named the frame that ran the original `cfw_park_run`,
+	 * and that frame died with its invocation. Two things then went wrong at once: the predicate
+	 * walked past the chain into reused VM stack memory, and the chain had no valid way to RETURN
+	 * -- when its outermost frame completed, the VM followed that pointer into a dead parent.
+	 *
+	 * `zend_generator_resume` relinks `prev_execute_data` on every resume for exactly this reason.
+	 * It is one assignment and it makes the floor correct again: the chain now genuinely hangs off
+	 * this call, so `host_ced` is its ancestor and the walk terminates there.
+	 *
+	 * A flat harness hid it. Calling run and resume from the same scope puts the resume's frame in
+	 * the slot the run's frame just vacated, so the stale pointer and the live one are the same
+	 * ADDRESS and everything works by coincidence. Resuming from a different stack depth -- which
+	 * is every Worker invocation -- segfaults without this.
+	 */
+	held_root->prev_execute_data = host_ced;
+	zend_execute_data* outer_floor = park_floor;
+	park_floor = host_ced;
+	int parked;
+	if (setjmp(park_jmp) == 0) {
+		park_armed = 1;
+		EG(current_execute_data) = held_caller;
+		zend_try {
+			execute_ex(held_caller);
+		}
+		zend_end_try();
+		park_armed = 0;
+		parked = 0;
+	}
+	else {
+		park_armed = 0;
+		EG(bailout) = outer_bailout;
+		parked = 1;
+	}
+
+	held_vm_stack = EG(vm_stack);
+	held_vm_stack_top = EG(vm_stack_top);
+	held_vm_stack_end = EG(vm_stack_end);
 	EG(current_execute_data) = host_ced;
 	EG(vm_stack) = host_stack;
 	EG(vm_stack_top) = host_top;
 	EG(vm_stack_end) = host_end;
-	RETURN_STRING("RESUMED");
+	park_floor = outer_floor;
+
+	if (!parked) {
+		efree(held_vm_stack);
+		RETURN_STRING("DONE");
+	}
+
+	held_call = saved_call;
+	held_caller = saved_caller;
+	held_opline = saved_opline;
+	held_ret = saved_ret;
+	/* held_root is NOT reassigned: the chain's root does not move, and recomputing it here would
+	 * read one frame short of it, since the floor is already sitting on it */
+	held = 1;
+	RETURN_STRING("PARKED");
 }
 
 /* hand-written rather than generated from a stub file: without arginfo the engine prints
