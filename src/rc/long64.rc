@@ -54,6 +54,10 @@ WITH_CALENDAR=0
 WITH_EXIF=0
 
 WITH_ICONV=0
+# 0 ON PURPOSE and mbstring is still IN; see the CONFIGURE_FLAGS line at the bottom.
+# WITH_MBSTRING=static emits `--with-mbstring`, and ext/mbstring/config.m4 declares
+# PHP_ARG_ENABLE([mbstring]) with no --with- form, so autoconf silently ignores it. Every earlier
+# build reported mbstring absent with WITH_MBSTRING=static set.
 WITH_MBSTRING=0
 WITH_ONIGURUMA=0
 WITH_SQLITE=0
@@ -76,3 +80,14 @@ WITH_WAITLINE=0
 
 # opcache is compiled in; file_cache_only is set at runtime from the worker ini
 CONFIGURE_FLAGS+= --enable-opcache
+
+# THE REAL mbstring. Its last refusal died on a measured +2 ms of edge startup (n=4 interleaved cold
+# compiles); bundle and speed were already dead. What it closes: 10 core-reachable parity
+# divergences, all mb_convert_encoding against legacy charsets, and ext-mbstring moves from
+# POLYFILLED_PLATFORM to NATIVE_PLATFORM so contrib requirements stop degrading to unverifiable.
+# --disable-mbregex keeps oniguruma out: mb_substr / mb_strtolower / mb_strlen need libmbfl, which is
+# bundled in ext/mbstring, and Drupal core calls no mb_ereg_* function.
+CONFIGURE_FLAGS+= --enable-mbstring --disable-mbregex
+
+# The park. src/ext/cfwpark is installed into php-src by src/build-variant.sh before configure runs.
+CONFIGURE_FLAGS+= --enable-cfwpark

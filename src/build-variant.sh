@@ -147,6 +147,38 @@ export MEMORY64
 
 PHP_SRC="$SRC/third_party/php${PHP_VERSION}-src"
 ZEND="$PHP_SRC/Zend"
+
+# The park extension, installed into php-src before configure. Copied INSIDE a container for the
+# same reason the TAILCALL patch below is: php-src is created by the builder and is not
+# host-writable on a Linux runner.
+if grep -q -- '--enable-cfwpark' "$RC"; then
+	# checked before the docker run, because mounting a missing path CREATES it and one failed
+	# install would leave a stub that breaks every later run
+	[ -d "$PHP_SRC" ] || {
+		echo "no php-src at $PHP_SRC; php-src is cloned by the build, so build this variant"
+		echo "once with --enable-cfwpark removed from the rc, then build again with it"
+		exit 1
+	}
+	docker run --rm -v "$PHP_SRC:/w" -v "$ROOT/src/ext/cfwpark:/ext:ro" -w /w alpine:3 sh -c '
+		mkdir -p ext/cfwpark
+		cp /ext/cfwpark.c /ext/php_cfwpark.h /ext/config.m4 ext/cfwpark/
+	'
+	# php_cfwpark.h must be present when configure RUNS: PHP_NEW_EXTENSION emits its include into
+	# main/internal_functions*.c only if it finds the header then, and without that include the
+	# static link fails on an undeclared phpext_cfwpark_ptr. Dropping the stamp is what guarantees
+	# the order on a tree that was already configured without the extension.
+	rm -f "$PHP_SRC/configured"
+	INSTALLED="$(docker run --rm -v "$PHP_SRC:/w" -w /w alpine:3 \
+		sh -c 'ls ext/cfwpark 2>/dev/null | tr "\n" " "' || true)"
+	case "$INSTALLED" in
+		*cfwpark.c*php_cfwpark.h*) ;;
+		*)
+			echo "ext/cfwpark did not install; it reads: $INSTALLED"
+			exit 1
+			;;
+	esac
+	echo "installed ext/cfwpark ($INSTALLED) and forced a reconfigure"
+fi
 # Both halves of the TAILCALL gate that wasm32 fails. Patched INSIDE the container: php-src is
 # created there and is not host-writable on a Linux runner, which is the trap that broke two earlier
 # patch scripts. Keyed on the patched SHAPE rather than a marker, so a re-run is a no-op.
