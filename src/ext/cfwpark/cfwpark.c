@@ -11,8 +11,20 @@
  * called userland and is waiting to resume. `array_map`, `usort` and `iterator_to_array` are the
  * shapes; a park under one returns a silently wrong answer, so `park_refused()` walks
  * `prev_execute_data` to the host's own entry frame and a refused park falls through to the real
- * function instead. `call_user_func_array` is NOT such a frame, which is what makes Drupal's own
- * dispatch parkable.
+ * function instead.
+ *
+ * ONE CLASS OF INTERNAL FRAME IS SPLICED OUT RATHER THAN REFUSED, and this file used to claim it
+ * could never be there at all. `call_user_func_array` compiles to `ZEND_INIT_USER_CALL` and leaves
+ * no frame -- but ONLY when the compiler resolved the name, and an unqualified call inside a
+ * NAMESPACE is resolved at runtime instead, so `zend_try_compile_special_func` never runs and the
+ * frame is real. Every synthetic harness that read this safe was written in the global namespace;
+ * all of Drupal is namespaced. Measured 2026-09-08 on the shipping interpreter: 3 frames through
+ * `Probe\Ns\viaUnqualified` against 2 through `\call_user_func_array`, and one internal frame
+ * between `FormBuilder::retrieveForm` and the form callback it dispatched.
+ *
+ * {@link park_flatten} handles it. See its docblock for the invariants; the short version is that
+ * such a frame's whole remaining job is to copy its callback's return value, and the leave helper
+ * already does exactly that for a nested call.
  */
 
 /* before php.h: a phpize build puts COMPILE_DL_CFWPARK here, and without it the ZEND_GET_MODULE at
@@ -42,6 +54,9 @@ static zend_execute_data* saved_caller;
 static const zend_op* saved_opline;
 static zval* saved_ret;
 static zend_execute_data* saved_root;
+
+/* where the answer to a trapped call whose result is discarded goes; see park_trap_handler */
+static zval park_discard;
 
 static int held = 0;
 static zend_execute_data* held_call;
@@ -83,16 +98,124 @@ typedef struct {
 static cfw_trap cfw_traps[CFW_MAX_TRAPS];
 static int cfw_trap_count = 0;
 
+/* php-src keeps this in zend_execute.c rather than a header */
+#define CFW_RETURN_VALUE_USED(opline) ((opline)->result_type != IS_UNUSED)
+
+/**
+ * Whether this internal function does nothing after its callback but hand back its return value.
+ *
+ * The list is a property of the ENGINE rather than of a deployment, so it is not configurable.
+ * Adding a name means asserting all six invariants below of php-src's implementation of it:
+ *
+ *   1. it owns no C resource that must be released after the callback,
+ *   2. it performs no work after the callback beyond copying the return value,
+ *   3. its arguments and return value live in Zend-managed memory,
+ *   4. it dispatched exactly one userland call and is waiting on that call,
+ *   5. it is never re-entered once the callback returns,
+ *   6. its own return value is that callback's return value.
+ *
+ * `call_user_func` and `call_user_func_array` are literally "parse the callable, hand the array to
+ * `zend_call_function`, copy the retval". `array_map` fails 2 and 4, `usort` fails 4 and 5,
+ * `preg_replace_callback` fails 2. When in doubt the answer is to leave it off the list: an absent
+ * name is a refusal, which degrades, and a wrong name is memory corruption.
+ */
+static int park_trampoline(const zend_function* fn) {
+	if (!fn || fn->type != ZEND_INTERNAL_FUNCTION) return 0;
+	/* a METHOD of the same name is a different function; only the global ones qualify */
+	if (fn->common.scope || !fn->common.function_name) return 0;
+	return zend_string_equals_literal(fn->common.function_name, "call_user_func") ||
+		   zend_string_equals_literal(fn->common.function_name, "call_user_func_array");
+}
+
+/**
+ * Whether `frame` is a trampoline waiting on `callee`, which is invariant 4 checked rather than
+ * assumed.
+ *
+ * `ZEND_CALL_TOP` on a userland callee is the signature of `zend_call_function`: the VM sets it so
+ * the callee's return leaves `execute_ex` and hands control back to C. A trampoline whose callee is
+ * an INTERNAL frame dispatched nothing that can be relinked, so it is refused -- which is the
+ * `call_user_func('fwrite', ...)` shape, and the refusal is correct there.
+ *
+ * The caller has to be userland too, because the splice reads its opline for the result slot.
+ */
+static int park_splicable(const zend_execute_data* frame, const zend_execute_data* callee) {
+	const zend_execute_data* caller = frame ? frame->prev_execute_data : NULL;
+	if (!park_trampoline(frame ? frame->func : NULL)) return 0;
+	if (!callee || callee->prev_execute_data != frame || !callee->func) return 0;
+	if (!ZEND_USER_CODE(callee->func->common.type)) return 0;
+	if (!(ZEND_CALL_INFO(callee) & ZEND_CALL_TOP)) return 0;
+	if (ZEND_CALL_INFO(callee) & ZEND_CALL_CODE) return 0;
+	if (!caller || !caller->func || !ZEND_USER_CODE(caller->func->common.type)) return 0;
+	return 1;
+}
+
 static int park_refused(zend_execute_data* call) {
 	/* the whole chain down to the floor, with no early break on ZEND_CALL_TOP: a closure invoked
 	 * from C carries that flag, so breaking there reads safe for exactly the cases that corrupt */
+	zend_execute_data* callee = call;
 	zend_execute_data* ex = call ? call->prev_execute_data : NULL;
 	int unsafe = 0;
 	while (ex && ex != park_floor) {
-		if (ex->func && ex->func->type == ZEND_INTERNAL_FUNCTION) unsafe++;
+		if (ex->func && ex->func->type == ZEND_INTERNAL_FUNCTION && !park_splicable(ex, callee)) {
+			unsafe++;
+		}
+		callee = ex;
 		ex = ex->prev_execute_data;
 	}
 	return unsafe;
+}
+
+/**
+ * Takes every splicable trampoline out of the chain, so what is parked is pure userland.
+ *
+ * The frame's own epilogue is `copy the callback's retval into my result slot, free my args, pop my
+ * frame`, and `zend_leave_helper`'s NESTED path already performs all of it for a normal call. So
+ * rather than emulating the epilogue on resume, the callee is relinked to the trampoline's CALLER
+ * and its `ZEND_CALL_TOP` is cleared: its return then takes that path, lands at `opline + 1` of the
+ * `DO_FCALL` that entered the trampoline, and the resume needs no special case at all.
+ *
+ * Three things this has to fix up, each of which is a crash if it is missed:
+ *
+ * - `return_value` points at `zend_call_function`'s caller's C stack (`&retval` inside
+ *   `call_user_func_array`), which the `longjmp` destroys. It is repointed at the result slot the
+ *   `DO_FCALL` already allocated and NULLed, or at nothing when the result is unused.
+ * - the trampoline's own args are never freed, because nothing returns to `DO_FCALL` to free them.
+ *   They are dead the moment `zend_call_function` copied them into the callee, so they are released
+ *   here and the count zeroed so a later free cannot double-release.
+ * - the callee's frame free walks back to the trampoline's frame rather than past it, which is
+ *   correct: the slot is reclaimed when the CALLER's frame is popped.
+ *
+ * TWO THINGS ARE LOST, stated because neither is nothing:
+ *
+ * - `zend_call_function` saves and restores `EG(fake_scope)` around the call, so a park taken
+ *   inside a `Closure::bind` scope leaves it NULL. NULL is the value in every path a request takes.
+ * - `call_user_func_array` calls `zend_unwrap_reference()` on a retval that is a reference, and the
+ *   spliced return does not, so a callee declared `function &f()` dispatched through a trampoline
+ *   would hand its caller an `IS_REFERENCE` where PHP hands a value. Nothing in Drupal's dispatch
+ *   returns by reference.
+ *
+ * The alternative to both is refusing every park under Drupal's dispatch.
+ */
+static void park_flatten(zend_execute_data* call) {
+	zend_execute_data* callee = call;
+	zend_execute_data* ex = call ? call->prev_execute_data : NULL;
+	while (ex && ex != park_floor) {
+		zend_execute_data* below = ex->prev_execute_data;
+		if (ex->func && ex->func->type == ZEND_INTERNAL_FUNCTION && park_splicable(ex, callee)) {
+			const zend_op* op = below->opline;
+			callee->return_value =
+				CFW_RETURN_VALUE_USED(op) ? ZEND_CALL_VAR(below, op->result.var) : NULL;
+			callee->prev_execute_data = below;
+			ZEND_DEL_CALL_FLAG(callee, ZEND_CALL_TOP);
+			zend_vm_stack_free_args(ex);
+			ZEND_CALL_NUM_ARGS(ex) = 0;
+			/* `callee` is unchanged: it now hangs off `below`, which the next step walks to */
+		}
+		else {
+			callee = ex;
+		}
+		ex = below;
+	}
 }
 
 /**
@@ -167,10 +290,20 @@ static void ZEND_FASTCALL park_trap_handler(zend_execute_data* call, zval* ret) 
 	}
 
 	capture_pending(call);
+	/* BEFORE anything is recorded: it shortens the chain, so a root or a caller taken first would
+	 * name a frame the resume no longer walks through */
+	park_flatten(call);
 	saved_call = call;
 	saved_caller = call->prev_execute_data;
 	saved_opline = saved_caller->opline;
-	saved_ret = ret;
+	/**
+	 * `ret` IS NOT ALWAYS A VM SLOT, and taking it unconditionally writes into freed C stack.
+	 * `ZEND_DO_FCALL` passes `EX_VAR(result.var)` when the result is used and `&retval` -- its own
+	 * C local -- when it is not, so `fwrite($s, $data);` as a statement hands this a pointer the
+	 * `longjmp` invalidates. The answer goes to a slot of our own in that case; nothing reads it,
+	 * which is the point.
+	 */
+	saved_ret = CFW_RETURN_VALUE_USED(saved_opline) ? ret : &park_discard;
 	/* while park_floor is still this chain's, which is the only point it can be computed from */
 	saved_root = chain_root(call);
 	longjmp(park_jmp, 1);
@@ -202,6 +335,36 @@ PHP_FUNCTION(cfw_park_trap) {
 PHP_FUNCTION(cfw_park_safe) {
 	ZEND_PARSE_PARAMETERS_NONE();
 	RETURN_LONG(park_refused(EG(current_execute_data)));
+}
+
+/**
+ * Every internal frame between here and the floor, and whether a park can splice each one.
+ *
+ * A count alone says a park was refused and not what refused it, and this mechanism has now been
+ * misdiagnosed three times from a count: the frame was assumed to be `fopen`, then Guzzle's
+ * `StreamHandler`, then `call_user_func_array` in a shape no harness could reproduce. A refusal
+ * that names its own frame costs one array per call and removes that whole class of guess.
+ */
+PHP_FUNCTION(cfw_park_frames) {
+	ZEND_PARSE_PARAMETERS_NONE();
+	array_init(return_value);
+	zend_execute_data* callee = EG(current_execute_data);
+	zend_execute_data* ex = callee ? callee->prev_execute_data : NULL;
+	while (ex && ex != park_floor) {
+		if (ex->func && ex->func->type == ZEND_INTERNAL_FUNCTION) {
+			zval row;
+			array_init(&row);
+			add_assoc_str(
+				&row, "fn",
+				ex->func->common.function_name ? zend_string_copy(ex->func->common.function_name)
+											   : ZSTR_EMPTY_ALLOC()
+			);
+			add_assoc_bool(&row, "transparent", park_splicable(ex, callee));
+			add_next_index_zval(return_value, &row);
+		}
+		callee = ex;
+		ex = ex->prev_execute_data;
+	}
 }
 
 /**
@@ -324,6 +487,9 @@ PHP_FUNCTION(cfw_park_resume) {
 	EG(vm_stack_top) = held_vm_stack_top;
 	EG(vm_stack_end) = held_vm_stack_end;
 
+	/* the discard slot is reused across parks, so the previous answer has to go first; a real VM
+	 * slot was NULLed by ZEND_DO_FCALL and must not be touched */
+	if (held_ret == &park_discard) zval_ptr_dtor(&park_discard);
 	ZVAL_COPY(held_ret, answer);
 
 	uint32_t call_info = ZEND_CALL_INFO(held_call);
@@ -407,6 +573,9 @@ ZEND_END_ARG_INFO()
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_cfw_park_safe, 0, 0, IS_LONG, 0)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_cfw_park_frames, 0, 0, IS_ARRAY, 0)
+ZEND_END_ARG_INFO()
+
 ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_cfw_park_run, 0, 1, IS_STRING, 0)
 ZEND_ARG_TYPE_INFO(0, code, IS_STRING, 0)
 ZEND_END_ARG_INFO()
@@ -420,9 +589,10 @@ ZEND_END_ARG_INFO()
 
 static const zend_function_entry cfwpark_functions[] = {
 	ZEND_FE(cfw_park_trap, arginfo_cfw_park_trap) ZEND_FE(cfw_park_safe, arginfo_cfw_park_safe)
-		ZEND_FE(cfw_park_run, arginfo_cfw_park_run)
-			ZEND_FE(cfw_park_pending, arginfo_cfw_park_pending)
-				ZEND_FE(cfw_park_resume, arginfo_cfw_park_resume) ZEND_FE_END
+		ZEND_FE(cfw_park_frames, arginfo_cfw_park_frames)
+			ZEND_FE(cfw_park_run, arginfo_cfw_park_run)
+				ZEND_FE(cfw_park_pending, arginfo_cfw_park_pending)
+					ZEND_FE(cfw_park_resume, arginfo_cfw_park_resume) ZEND_FE_END
 };
 
 zend_module_entry cfwpark_module_entry = {
