@@ -286,6 +286,15 @@ jobs:
           restore-keys: |
             emsdk-${{ runner.os }}-${{ hashFiles('src/pin-builder-image.sh') }}-
 
+      - name: Restore the Dependency Sources
+        id: third-party-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ env.PHP_WASM_DIR }}/third_party
+          key: third-party-${{ runner.os }}-${{ hashFiles('src/deps.lock') }}-${{ matrix.variant }}
+          restore-keys: |
+            third-party-${{ runner.os }}-${{ hashFiles('src/deps.lock') }}-
+
       - name: Fetch the Libraries php-wasm Does Not
         run: |
           ICONV=""
@@ -316,6 +325,13 @@ jobs:
           else
             echo "rc is wasm32, leaving vrzno's ILP32 call sites intact"
           fi
+
+      - name: Save the Dependency Sources
+        if: ${{ !cancelled() && steps.third-party-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.PHP_WASM_DIR }}/third_party
+          key: ${{ steps.third-party-cache.outputs.cache-primary-key }}
 
       - name: Enlarge Swap for the LTO Link
         run: |

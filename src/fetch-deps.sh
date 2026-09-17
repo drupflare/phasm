@@ -165,12 +165,41 @@ fetch_verified() {
 	return 1
 }
 
+# A clone that survives the host being briefly down, which `fetch_verified` already got and the
+# clones did not.
+#
+# MEASURED, not hypothetical: on 2026-09-17 `gitlab.gnome.org` answered 502 for libxml2 and took the
+# whole matrix red at the FETCH step, before a single object compiled. `git` exits 128 and the step
+# fails, so the run reads as a broken build rather than as somebody else's outage -- and the commit
+# it landed on had only renamed rc files.
+#
+# A partial clone leaves a directory behind and every caller guards on `[ -d ... ]`, so a retry
+# would otherwise skip the repair and the build would fail later with a confusing missing-source
+# error. Clearing the target first is what makes the retry mean anything.
+git_clone_retry() {
+	local dest="${*: -1}" attempt=1 delay=5
+	while :; do
+		rm -rf "$dest"
+		if git clone "$@"; then
+			return 0
+		fi
+		if [ "$attempt" -ge 4 ]; then
+			echo "git clone failed after $attempt attempts: $*" >&2
+			return 1
+		fi
+		echo "  clone failed, retrying in ${delay}s (attempt $attempt of 4)" >&2
+		sleep "$delay"
+		attempt=$((attempt + 1))
+		delay=$((delay * 2))
+	done
+}
+
 # --- libxml2, and dom/simplexml/xml all fail without it -----------------------
 if have_lib libxml2.a; then
 	echo "libxml2: already built"
 else
 	echo "libxml2: fetching v2.9.10"
-	[ -d "$THIRD/libxml2" ] || git clone --depth 1 --branch "$LIBXML2_REF" \
+	[ -d "$THIRD/libxml2" ] || git_clone_retry --depth 1 --branch "$LIBXML2_REF" \
 		"$LIBXML2_REPO" "$THIRD/libxml2"
 	# autogen.sh rather than configure: the git checkout ships no configure script, only the
 	# autotools inputs. A release TARBALL would have one; the tag does not.
@@ -187,7 +216,7 @@ if have_lib libyaml.a; then
 	echo "libyaml: already built"
 else
 	echo "libyaml: fetching 0.2.5"
-	[ -d "$THIRD/libyaml" ] || git clone --depth 1 --branch "$LIBYAML_REF" \
+	[ -d "$THIRD/libyaml" ] || git_clone_retry --depth 1 --branch "$LIBYAML_REF" \
 		"$LIBYAML_REPO" "$THIRD/libyaml"
 	in_builder /src/third_party/libyaml "
 		[ -f configure ] || ./bootstrap
@@ -202,7 +231,7 @@ if have_lib libz.a; then
 	echo "zlib: already built"
 else
 	echo "zlib: fetching v1.3.1"
-	[ -d "$THIRD/zlib" ] || git clone --depth 1 --branch "$ZLIB_REF" \
+	[ -d "$THIRD/zlib" ] || git_clone_retry --depth 1 --branch "$ZLIB_REF" \
 		"$ZLIB_REPO" "$THIRD/zlib"
 	# --static is required, not optional: without it zlib builds libz.so AND links two test
 	# programs against it, and wasm-ld rejects a .so with "unknown file type". The warm tree's
@@ -251,7 +280,7 @@ if [ -d "$SRC/ext/vrzno" ]; then
 	echo "vrzno: already in ext/"
 else
 	echo "vrzno: fetching c3aa3b9"
-	[ -d "$THIRD/vrzno" ] || git clone "$VRZNO_REPO" "$THIRD/vrzno"
+	[ -d "$THIRD/vrzno" ] || git_clone_retry "$VRZNO_REPO" "$THIRD/vrzno"
 	git -C "$THIRD/vrzno" checkout --quiet "$VRZNO_REF"
 	# copied INSIDE the builder: php-src is created by the container, so its ext/ is not
 	# writable by the host user and a host-side cp fails with "Permission denied"
