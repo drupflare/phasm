@@ -99,6 +99,15 @@ grep -q 'MALLOC=emmalloc' "$RC" && {
 # IMPORTED_MEMORY is link-only: it changes who CREATES the WebAssembly.Memory, not how code
 # addresses it
 grep -q 'IMPORTED_MEMORY=1' "$RC" && LINK_FLAGS="$LINK_FLAGS -sIMPORTED_MEMORY=1"
+# Both link-only, and both are needed before a side module can be placed: the table has to grow to
+# hold a library's element segment, and `__stack_pointer` is one of the five globals every side
+# module imports. A build with only the first links the library and then cannot give it a stack.
+# emcc emits `max == initial` without ALLOW_TABLE_GROWTH and stops exporting the global by default,
+# so the two failures look unrelated and are one missing pair. See the rc for what this costs.
+grep -q 'TABLE_GROWTH=1' "$RC" && {
+	LINK_FLAGS="$LINK_FLAGS -sALLOW_TABLE_GROWTH=1"
+	LINK_FLAGS="$LINK_FLAGS -Wl,--export=__stack_pointer"
+}
 if [ -n "$COMPILE_FLAGS" ] || [ -n "$LINK_FLAGS" ]; then
 	# each value is QUOTED as one argument: an arm passing two compile flags produces
 	# `EXTRA_CFLAGS=-DX=1 -mbulk-memory`, and unquoted that hands make `-mbulk-memory` as an

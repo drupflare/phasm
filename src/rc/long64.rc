@@ -91,3 +91,33 @@ CONFIGURE_FLAGS+= --enable-mbstring --disable-mbregex
 
 # The park. src/ext/cfwpark is installed into php-src by src/build-variant.sh before configure runs.
 CONFIGURE_FLAGS+= --enable-cfwpark
+
+# A growable table and an exported stack pointer, which together let a -sSIDE_MODULE extension link
+# into this binary at request time with no code generation anywhere.
+#
+# MEASURED, NOT INFERRED, and it inverts what this file used to assume. `build-static.sh`'s header
+# says a dynamic build "cannot load .so extensions in Workers at all", so every extension must be
+# compiled in. That is true of MAIN_MODULE=1, which leaves JS-library symbols undefined in the GOT
+# and reaches `convertJsFunctionToWasm` -- a runtime module build, refused by the codegen ban with
+# `Wasm code generation disallowed by embedder`. It is FALSE of this arm. ext/calendar as a
+# 19,075-byte side module linked and ran in a workerd isolate where `new WebAssembly.Module` and
+# `new Function` were both confirmed refused in the same request: `extension_loaded("calendar")`
+# true, `cal_days_in_month(CAL_GREGORIAN,8,2003)` 31.
+#
+# MAIN_MODULE is not needed for it and costs more than it returns: MM=1 is +13.62% and does not run,
+# MM=2 is +0.33% and buys only the removal of four libc shims (time, localtime_r, strlen, mktime),
+# which a bundled wasm libc side module removes anyway. This arm is the shipping shape plus two
+# bytes.
+#
+# Both flags are LINK-ONLY. The table is the one the loader grows to place a library's element
+# segment, and `__stack_pointer` is one of the five globals a side module imports -- emcc stops
+# exporting it by default and the loader cannot place a module without it. Neither changes how any
+# object addresses memory, so no compile flag is involved.
+#
+# THE COST IS NOT ZERO AND IS NOT THE BINARY SIZE. A growable table defeats one V8 optimisation on
+# every indirect call: attributed at ~1.1-1.4% steady state on its own round-robin arm (A/A 0.43%),
+# against +2 bytes of module and no change to `php_embed_init`, which stays flat at 15.7-17.1 ms.
+# Re-measure it here before treating that as this build's number; it was taken on a --disable-all
+# build at PHP_INT_SIZE 4, not on this one.
+
+# TABLE_GROWTH=1
