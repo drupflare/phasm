@@ -86,6 +86,41 @@ is charged. If that day comes:
 wasm32. No arm produced a binary, so there is no measurement in either direction, and any number
 attached to this variant later has to come from a build that actually linked.
 
+## `.rc.archived` means the question is ANSWERED; `.rc.pending` means it is UNPROVEN
+
+Two suffixes, two different states, and confusing them is how a closed arm gets rebuilt forever.
+`build.yml:138` globs `src/rc/*.rc` for the push matrix, so **every rc file is a permanent
+`ubuntu-latest` slot on every push** and the matrix only shrinks by renaming.
+
+- **`.rc.pending`** -- unproven, may not even link, invisible to the push matrix and buildable by
+  explicit dispatch through the fallback at `build-variant.sh:23`.
+- **`.rc.archived`** -- the question it answered is closed. Not in the matrix and **not reachable by
+  dispatch either**, because the fallback only looks for `.pending`. Reviving one is a rename, which
+  is the friction that keeps an answered arm from quietly returning.
+
+**Seven archived 2026-09-17, 19 arms down to 12**, after the consumer hit its concurrent-runner
+limit. Both groups were checked against `worker/experiments/wrangler/` first, because "nothing
+imports it" is not the same as "nothing uses it" -- that is how `php-binary-raw.ts` sits on the
+consumer's dead-module list while being the shipping interpreter.
+
+- **The size family: `min85`, `trim85`, `nopdo85`, `mergefunc85`, `noopcache85`.** Every one exists
+  to price a smaller binary against `control85`. **Cloudflare removed the 3 MiB compressed bundle
+  ceiling on 2026-09-04**; the limit is 64 MiB uncompressed and the consumer's canonical config sits
+  at 23.1% of it. The question has no consumer left. None is cited in the consumer's `CLAUDE.md`,
+  its `TECHNICAL_REPORT.md`, or this file.
+- **Two of the four JSPI arms: `jspimb`, `jspisjlj`.** JSPI is closed twice in the consumer's
+  memory -- zero of 62 modules needs a suspension, and the bundle reason expired leaving per-call
+  cost. `jspi` and `jspimbsjlj` STAY, because `worker/experiments/wrangler/` names
+  `php-binary-jspi` and `php-binary-jspimbsjlj` as alias targets and those configs must stay
+  reproducible.
+
+No rc includes another. Each is self-contained and describes itself as "X.rc plus Y" in prose only,
+so archiving one cannot break a sibling; verified before the renames rather than assumed.
+
+Four more are single-variable controls on `long64` that nothing cites -- `control84`, `bulkmem`,
+`impmem`, `zendalloc`. They were left alone deliberately: a single-variable control is cheap to
+re-add and expensive to lose if it turns out to be the baseline under a published number.
+
 ## The wasm64 arm is `.rc.pending`, and `.rc.pending` now means "dispatch-only" rather than "hidden"
 
 `src/rc/wasm64.rc.pending` is `control85.rc` with `-sMEMORY64=1` and nothing else changed, so the
