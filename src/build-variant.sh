@@ -265,9 +265,9 @@ OUT="$OUT" JOBS="${JOBS:-8}" bash "$ROOT/src/build-static.sh" "$SRC"
 if grep -q 'STACK_POINTER=import' "$RC"; then
 	WASMS=("$OUT"/*.wasm)
 	GLUES=("$OUT"/php*-worker.mjs)
-	[ "${#WASMS[@]}" = 1 ] && [ "${#GLUES[@]}" = 1 ] || {
+	if [ "${#WASMS[@]}" != 1 ] || [ "${#GLUES[@]}" != 1 ]; then
 		echo "STACK_POINTER=import expects one .wasm and one glue in $OUT"
 		exit 1
-	}
+	fi
 	node "$ROOT/src/import-stack-pointer.mjs" "${WASMS[0]}" "${GLUES[0]}" "${WASMS[0]}" "${GLUES[0]}"
 fi
