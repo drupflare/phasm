@@ -114,10 +114,13 @@ CONFIGURE_FLAGS+= --enable-cfwpark
 # exporting it by default and the loader cannot place a module without it. Neither changes how any
 # object addresses memory, so no compile flag is involved.
 #
-# THE COST IS NOT ZERO AND IS NOT THE BINARY SIZE. A growable table defeats one V8 optimisation on
-# every indirect call: attributed at ~1.1-1.4% steady state on its own round-robin arm (A/A 0.43%),
-# against +2 bytes of module and no change to `php_embed_init`, which stays flat at 15.7-17.1 ms.
-# Re-measure it here before treating that as this build's number; it was taken on a --disable-all
-# build at PHP_INT_SIZE 4, not on this one.
+# THE COST IS THE EXPORTED POINTER, NOT THE TABLE. Measured in the worker's abi-speed harness,
+# interleaved n=9 on this build: exporting `__stack_pointer` is +8.3% blended (+13.6% on usercall),
+# because an exported mutable global stops the linker proving it module-private. The growable table
+# alone reads -0.2%. Importing the pointer instead (src/import-stack-pointer.mjs) is +3.4% blended
+# against an A/A of 1.000x, so this arm imports it.
+#
+# The side-module run above was on the EXPORT arm. The import arm is verified for PHP itself (the
+# harness cases) and not yet for linking a side module; run one before a release depends on it.
 
-# TABLE_GROWTH=1
+# STACK_POINTER=import

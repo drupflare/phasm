@@ -366,8 +366,9 @@ A side module imports `env.__stack_pointer`, so a host that loads one needs its 
 ABI harness. `STACK_POINTER=import` links with only the growable table and then
 `src/import-stack-pointer.mjs` moves the global to the last `env` import, which keeps every global
 index, and patches the glue to supply it: **3.4%** against the same binary, with an A/A of 1.000x.
-`tools/test-import-stack-pointer.sh` drives the edit over a hand-built module. `long64.rc` still
-carries `TABLE_GROWTH=1`.
+`tools/test-import-stack-pointer.sh` drives the edit over a hand-built module. `long64.rc` carries
+`STACK_POINTER=import`. Linking a real side module against the imported global has not been run yet
+(the calendar run was on the export arm), so do that before a release relies on loading one.
 
 ## Commands
 
