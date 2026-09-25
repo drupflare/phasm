@@ -359,6 +359,16 @@ Three things the tooling cannot tell you:
 
 Code comments: lowercase, terse, one line, no trailing period, only where the WHY is non-obvious.
 
+## Sharing `__stack_pointer`: import it, do not export it
+
+A side module imports `env.__stack_pointer`, so a host that loads one needs its own global shared.
+`TABLE_GROWTH=1` exports it, and exporting a mutable global cost **8.3%** in the worker's interleaved
+ABI harness. `STACK_POINTER=import` links with only the growable table and then
+`src/import-stack-pointer.mjs` moves the global to the last `env` import, which keeps every global
+index, and patches the glue to supply it: **3.4%** against the same binary, with an A/A of 1.000x.
+`tools/test-import-stack-pointer.sh` drives the edit over a hand-built module. `long64.rc` still
+carries `TABLE_GROWTH=1`.
+
 ## Commands
 
 ```sh
