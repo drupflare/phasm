@@ -108,6 +108,10 @@ grep -q 'TABLE_GROWTH=1' "$RC" && {
 	LINK_FLAGS="$LINK_FLAGS -sALLOW_TABLE_GROWTH=1"
 	LINK_FLAGS="$LINK_FLAGS -Wl,--export=__stack_pointer"
 }
+# The same pair with the stack pointer IMPORTED rather than exported: exporting a mutable global is
+# what cost ~8%, and an import shares it with a side module just as well. The link keeps the global
+# module-private; src/import-stack-pointer.mjs moves it to an import after the build, below.
+grep -q 'STACK_POINTER=import' "$RC" && LINK_FLAGS="$LINK_FLAGS -sALLOW_TABLE_GROWTH=1"
 if [ -n "$COMPILE_FLAGS" ] || [ -n "$LINK_FLAGS" ]; then
 	# each value is QUOTED as one argument: an arm passing two compile flags produces
 	# `EXTRA_CFLAGS=-DX=1 -mbulk-memory`, and unquoted that hands make `-mbulk-memory` as an
@@ -257,3 +261,13 @@ elif [ "$PHP_VERSION" = 8.3 ] && [ -d "$ZEND" ]; then
 fi
 
 OUT="$OUT" JOBS="${JOBS:-8}" bash "$ROOT/src/build-static.sh" "$SRC"
+
+if grep -q 'STACK_POINTER=import' "$RC"; then
+	WASMS=("$OUT"/*.wasm)
+	GLUES=("$OUT"/php*-worker.mjs)
+	[ "${#WASMS[@]}" = 1 ] && [ "${#GLUES[@]}" = 1 ] || {
+		echo "STACK_POINTER=import expects one .wasm and one glue in $OUT"
+		exit 1
+	}
+	node "$ROOT/src/import-stack-pointer.mjs" "${WASMS[0]}" "${GLUES[0]}" "${WASMS[0]}" "${GLUES[0]}"
+fi
