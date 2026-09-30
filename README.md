@@ -1,4 +1,4 @@
-# 🐘 phasm — a PHP interpreter that runs inside workerd
+# 🐘 phasm: a PHP interpreter that runs inside workerd
 
 [![Build](https://github.com/drupflare/phasm/actions/workflows/build.yml/badge.svg)](https://github.com/drupflare/phasm/actions/workflows/build.yml)
 [![Prettier](https://github.com/drupflare/phasm/actions/workflows/prettier.yml/badge.svg)](https://github.com/drupflare/phasm/actions/workflows/prettier.yml)
@@ -29,7 +29,7 @@ shipped php-wasm build works there and every extension has to be statically link
 ## 🎯 Why Static
 
 Emscripten's dynamic linker loads a side module by compiling wasm **at runtime**. workerd
-does not allow that, so a dylink build cannot load a `.so` extension in a Worker at all —
+does not allow that, so a dylink build cannot load a `.so` extension in a Worker at all:
 not slowly, not at all. Every extension Drupal requires therefore has to be compiled in,
 which makes `MAIN_MODULE=0` the only shape that works and turns the extension set into a
 **budget decision** rather than a preference:
@@ -69,7 +69,7 @@ in the first 16 bytes means `MAIN_MODULE=0` did not take, and it says so.
 
 Two patches are applied to the php-wasm checkout rather than committed here, because they
 edit upstream files; `build-static.sh`'s header records what and why. Both are idempotent
-and keyed on the **patched shape**, never on a marker comment — a `dnl`-style marker inside
+and keyed on the **patched shape**, never on a marker comment: a `dnl`-style marker inside
 a macro argument is what broke the opcache `config.m4` patch twice.
 
 ---
@@ -131,14 +131,14 @@ locals cap: `wasm-emscripten-finalize` fails with `parse exception: too many loc
 rewrites every call made from a `setjmp`-containing function into an `invoke_*` **JS**
 trampoline, and `pib_run` opens a `zend_try` before it calls the VM. JSPI refuses to
 suspend across a JS frame, so every `pib_run` on a plain `-sJSPI` build died with
-`SuspendError: trying to suspend JS frames` — even `<?php echo PHP_VERSION;`.
+`SuspendError: trying to suspend JS frames`, even `<?php echo PHP_VERSION;`.
 `-sSUPPORT_LONGJMP=wasm` routes longjmp through wasm exception handling instead, so no JS
 frame is introduced.
 
 That flag is **not link-only**. Linking an LTO object compiled without it while the link
 passes `-mllvm -exception-model=wasm` aborts `wasm-ld` with
 `LLVM ERROR: Cannot select: ... catchret`, and `Makefile:209` clears `EXTRA_CFLAGS` after
-the rc is included — so the compile half has to arrive as a make command-line variable:
+the rc is included, so the compile half has to arrive as a make command-line variable:
 
 ```sh
 MAKE_EXTRA='EXTRA_CFLAGS=-sSUPPORT_LONGJMP=wasm' bash src/build-variant.sh jspisjlj <checkout>
@@ -339,7 +339,7 @@ bun run prettier # writes; prettier:check only reports
   syntax.
 
 The pre-commit hook runs `lint-staged`, then `tools/lint-shell.sh`, then `shellcheck` if the
-binary is on `PATH` — so a commit made without it still gets the parse gate, and CI catches
+binary is on `PATH`, so a commit made without it still gets the parse gate, and CI catches
 the rest.
 
 ---
