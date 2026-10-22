@@ -122,5 +122,11 @@ CONFIGURE_FLAGS+= --enable-cfwpark
 #
 # The side-module run above was on the EXPORT arm. The import arm is verified for PHP itself (the
 # harness cases) and not yet for linking a side module; run one before a release depends on it.
-
-# STACK_POINTER=import
+#
+# THIS ARM DOES NOT IMPORT IT, and neither did the 8.5.2 binary it replaced (0 global imports in
+# both). The import arm passes the park specs on 8.5.12 once cfwpark pins the chain root's return
+# slot, so the import is not what trapped them. build-variant.sh matches the marker below as a
+# plain substring, so a comment naming it turns the arm on: restore it as the bare marker line to
+# build the import arm again.
+#
+# STACK_POINTER import: off
