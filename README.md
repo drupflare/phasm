@@ -160,8 +160,10 @@ mentions `SUPPORT_LONGJMP=wasm`, because forgetting it is a multi-hour mistake.
   `MAKEFLAGS += ... --shuffle=random`, which is a 4.4 feature. macOS ships 3.81, so
   `brew install make` and use `gmake`; Ubuntu images have shipped 4.3 for several releases,
   so the workflow builds 4.4.1 from source when it finds an older one.
+- **Node.** `build-variant.sh` runs `src/import-stack-pointer.mjs` on the finished module, and
+  php-wasm's packages need `npm install`.
 - **A php-wasm checkout**, passed as the first argument, from
-  <https://github.com/seanmorris/php-wasm>.
+  <https://github.com/seanmorris/php-wasm>, at the commit `src/php-versions.lock` pins.
 - **Hours.** The builder image is x86_64 and runs under QEMU on Apple Silicon. A full
   configure alone is ~13-15 minutes there.
 
@@ -169,18 +171,43 @@ mentions `SUPPORT_LONGJMP=wasm`, because forgetting it is a multi-hour mistake.
 
 ## 🚀 Building Locally
 
-The shipping build needs no source patch and no extra make variables:
+The shipping build pins the PHP patch release and the php-wasm commit. Both live in
+`src/php-versions.lock`: php-wasm's Makefile hardcodes the patch release per minor (8.5.2 when this
+was written) and an rc cannot move it, and php-wasm master refuses every rc here because it requires
+`ASYNCIFY=1` for PHP 8.5. `src/php-pin.sh resolve 8.5` prints the release, `php-wasm-ref` the commit.
+`src/stage-php-patch.sh` replaces php-wasm's 8.5 patch with `src/patch/php8.5.patch`, which is
+rebased onto the pinned release because two hunks of the original no longer apply.
 
 ```sh
 # pin the compiler before anything compiles; compose asks for an untagged image name
 bash ~/phasm/src/pin-builder-image.sh
 
 git clone https://github.com/seanmorris/php-wasm /tmp/phpwasm-build/php-wasm
-cd ~/phasm
-bash src/build-variant.sh long64 /tmp/phpwasm-build/php-wasm
+cd /tmp/phpwasm-build/php-wasm
+git checkout --detach "$(bash ~/phasm/src/php-pin.sh php-wasm-ref)"
+cp ~/phasm/src/rc/long64.rc .php-wasm-rc
 
-bash src/inspect-build.sh vendor/static-long64 --expect-static
+# the Makefile finds each package's pre.mak and static.mak through `npm ls -p`; without this the
+# vrzno, dom, libxml, yaml and zlib flags never reach configure and the build still exits 0
+npm install --no-audit --no-fund
+
+export PHP_VERSION=8.5
+bash ~/phasm/src/stage-php-patch.sh .
+gmake third_party/php8.5-src/patched \
+	PHP_BUILDER_DIR="$PWD" IS_TTY=0 ENV_DIR="$PWD/" ENV_FILE="$PWD/.php-wasm-rc" \
+	PHP_VERSION_FULL="$(bash ~/phasm/src/php-pin.sh resolve 8.5)" \
+	PHP_BRANCH="php-$(bash ~/phasm/src/php-pin.sh resolve 8.5)"
+
+cd ~/phasm
+bash src/fetch-deps.sh /tmp/phpwasm-build/php-wasm
+OUT=/tmp/phpwasm-build/out/static-long64 bash src/build-variant.sh long64 /tmp/phpwasm-build/php-wasm
+
+bash src/inspect-build.sh /tmp/phpwasm-build/out/static-long64 --expect-static --expect-rc=src/rc/long64.rc
 ```
+
+`OUT` defaults to `vendor/static-long64`, which `build-variant.sh` will not overwrite, so a rebuild
+goes to a path of its own. `build-variant.sh` also refuses a php-src tree whose `php_version.h`
+disagrees with the pin, and `inspect-build.sh` fails a binary reporting a PHP below it.
 
 A variant carrying the VM interrupt patch takes two more steps, and their order is not stylistic:
 

@@ -160,6 +160,15 @@ echo "php version:      ${PHP_VERSION:-unknown}"
 echo "configure tail:  ${EXTENSIONS:- (not recovered)}"
 
 FAILED=0
+# the floor lives in src/php-versions.lock; an unreadable version fails too, because a missing
+# reading must not pass for a satisfied one
+if [ -z "$PHP_VERSION" ]; then
+	echo "FAIL: no PHP/x.y.z string in the binary, so the version floor cannot be checked"
+	FAILED=1
+elif ! PIN_MSG="$(bash "$(dirname "$0")/php-pin.sh" check "${PHP_VERSION%.*}" "$PHP_VERSION")"; then
+	echo "FAIL: $PIN_MSG"
+	FAILED=1
+fi
 if [ "$EXPECT_STATIC" = 1 ] && [ "$IS_STATIC" != 1 ]; then
 	echo "FAIL: expected a static build, found a dylink section -- workerd cannot load this"
 	FAILED=1

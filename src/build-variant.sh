@@ -15,7 +15,7 @@ VARIANT="${1:?usage: build-variant.sh <variant> [php-wasm-checkout]}"
 SRC="${2:-/tmp/phpwasm-build/php-wasm}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RC="$ROOT/src/rc/${VARIANT}.rc"
-OUT="$ROOT/vendor/static-${VARIANT}"
+OUT="${OUT:-$ROOT/vendor/static-${VARIANT}}"
 PRISTINE=/tmp/phpwasm-build/vmgen-pristine
 
 # an unproven arm lives as .rc.pending so the push matrix cannot schedule it; building one
@@ -126,6 +126,15 @@ if [ -n "$COMPILE_FLAGS" ] || [ -n "$LINK_FLAGS" ]; then
 	echo "derived flags for $VARIANT: $MAKE_EXTRA"
 fi
 
+# php-wasm hardcodes the patch release per minor and an rc cannot move it (the assignment follows the
+# rc include), so the pinned release arrives as make variables; src/php-versions.lock names it
+PHP_PINNED="$(bash "$ROOT/src/php-pin.sh" resolve "$PHP_VERSION")"
+if [ -n "$PHP_PINNED" ]; then
+	MAKE_EXTRA="${MAKE_EXTRA:+$MAKE_EXTRA }PHP_VERSION_FULL=$PHP_PINNED PHP_BRANCH=php-$PHP_PINNED"
+	export MAKE_EXTRA
+	echo "pinned PHP $PHP_PINNED for the $PHP_VERSION series"
+fi
+
 # wasm64 changes the ABI of every object, so a tree configured for wasm32 cannot be reused: the
 # `configured` stamp is a plain file target and would otherwise be honoured across the change.
 #
@@ -160,6 +169,17 @@ export MEMORY64
 
 PHP_SRC="$SRC/third_party/php${PHP_VERSION}-src"
 ZEND="$PHP_SRC/Zend"
+
+# a php-src cloned at another release is reused by make without a word, so an old tree would build
+# the old version under the new pin
+if [ -n "$PHP_PINNED" ] && [ -f "$PHP_SRC/main/php_version.h" ]; then
+	TREE_VERSION="$(sed -n 's/^#define PHP_VERSION "\(.*\)"/\1/p' "$PHP_SRC/main/php_version.h")"
+	[ "$TREE_VERSION" = "$PHP_PINNED" ] || {
+		echo "the php-src at $PHP_SRC is $TREE_VERSION and src/php-versions.lock pins $PHP_PINNED"
+		echo "use a fresh php-wasm checkout; a tree for another release cannot be reused"
+		exit 1
+	}
+fi
 
 # The park extension, installed into php-src before configure. Copied INSIDE a container for the
 # same reason the TAILCALL patch below is: php-src is created by the builder and is not

@@ -32,10 +32,10 @@ on:
           - long64
           - vmtailcall
       php_wasm_ref:
-        description: 'seanmorris/php-wasm git ref (tag, branch or SHA). Recorded in the release notes'
+        description: 'seanmorris/php-wasm git ref (tag, branch or SHA). Empty uses the commit src/php-versions.lock pins. Recorded in the release notes'
         type: string
-        required: true
-        default: master
+        required: false
+        default: ''
       patch_vm_interrupt:
         description: 'Apply patch-vm-interrupt.sh (needed for slice exports)'
         type: boolean
@@ -59,7 +59,7 @@ concurrency:
 
 env:
   PHP_WASM_DIR: /tmp/phpwasm-build/php-wasm
-  PHP_WASM_REF: ${{ inputs.php_wasm_ref || 'master' }}
+  PHP_WASM_REF: ${{ inputs.php_wasm_ref }}
 
 jobs:
   lint:
@@ -106,11 +106,22 @@ jobs:
             exit 1
           fi
           echo "no tracked build artifacts"
-      - name: Evaluate Every RC Against php-wasm's Guards
+      - name: Evaluate Every RC Against php-wasm's Guards at the Pinned Commit
         run: |
-          git clone --depth 1 https://github.com/seanmorris/php-wasm /tmp/rc-lint-php-wasm
-          cd /tmp/rc-lint-php-wasm && npm install --no-audit --no-fund > /dev/null
+          REF="$(bash src/php-pin.sh php-wasm-ref)"
+          mkdir /tmp/rc-lint-php-wasm && cd /tmp/rc-lint-php-wasm
+          git init -q
+          git fetch -q --depth 1 https://github.com/seanmorris/php-wasm "$REF"
+          git checkout -q FETCH_HEAD
+          npm install --no-audit --no-fund > /dev/null
           cd "$GITHUB_WORKSPACE" && bash tools/lint-rc.sh /tmp/rc-lint-php-wasm
+
+      - name: Evaluate Every RC Against php-wasm Master (Drift Warning)
+        continue-on-error: true
+        run: |
+          git clone --depth 1 https://github.com/seanmorris/php-wasm /tmp/rc-lint-php-wasm-master
+          cd /tmp/rc-lint-php-wasm-master && npm install --no-audit --no-fund > /dev/null
+          cd "$GITHUB_WORKSPACE" && bash tools/lint-rc.sh /tmp/rc-lint-php-wasm-master
 
       - name: Run Markdownlint
         run: bun run lint:md
@@ -219,7 +230,10 @@ jobs:
           mkdir -p "$(dirname "$PHP_WASM_DIR")"
           git clone https://github.com/seanmorris/php-wasm "$PHP_WASM_DIR"
           cd "$PHP_WASM_DIR"
-          git checkout --detach "$PHP_WASM_REF"
+          REF="${PHP_WASM_REF:-$(bash "$GITHUB_WORKSPACE/src/php-pin.sh" php-wasm-ref)}"
+          test -n "$REF"
+          git checkout --detach "$REF"
+          echo "PHP_WASM_REF=$REF" >> "$GITHUB_ENV"
           echo "PHP_WASM_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Install php-wasm's Node Packages
@@ -232,14 +246,24 @@ jobs:
         run: |
           cp "$RC" "$PHP_WASM_DIR/.php-wasm-rc"
 
+      - name: Stage the Rebased PHP Patch
+        run: |
+          PHP_VERSION="$PHP_VERSION" bash src/stage-php-patch.sh "$PHP_WASM_DIR"
+
       - name: Fetch and Patch the PHP Sources
         run: |
+          PIN="$(bash src/php-pin.sh resolve "$PHP_VERSION")"
+          PINNED=()
+          if [ -n "$PIN" ]; then
+            PINNED=("PHP_VERSION_FULL=$PIN" "PHP_BRANCH=php-$PIN")
+          fi
           cd "$PHP_WASM_DIR"
           make "third_party/php${PHP_VERSION}-src/patched" \
             PHP_BUILDER_DIR="$PHP_WASM_DIR" \
             IS_TTY=0 \
             ENV_DIR="$PHP_WASM_DIR/" \
-            ENV_FILE="$PHP_WASM_DIR/.php-wasm-rc"
+            ENV_FILE="$PHP_WASM_DIR/.php-wasm-rc" \
+            "${PINNED[@]}"
           test -f "third_party/php${PHP_VERSION}-src/Zend/zend_execute.c"
 
       - name: Drop ext/opcache
@@ -563,7 +587,7 @@ jobs:
     env:
       CONSUMER_REPO: drupflare/worker
       CONSUMER_WORKFLOW: interpreter.yml
-      CONSUMER_VARIANTS: control85
+      CONSUMER_VARIANTS: long64
       DISPATCH_EVENT: phasm-interpreter-published
       RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
 
