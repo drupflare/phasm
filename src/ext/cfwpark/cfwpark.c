@@ -58,6 +58,9 @@ static zend_execute_data* saved_root;
 /* where the answer to a trapped call whose result is discarded goes; see park_trap_handler */
 static zval park_discard;
 
+/* where the chain root's own return value goes; see park_pin_root */
+static zval park_root_ret;
+
 static int held = 0;
 static zend_execute_data* held_call;
 static zend_execute_data* held_caller;
@@ -235,6 +238,27 @@ static zend_execute_data* chain_root(zend_execute_data* call) {
 	return last;
 }
 
+/**
+ * Points the chain root's return slot at storage this file owns.
+ *
+ * `zend_eval_string` runs the chain with `return_value` set to a C local of its own, and the
+ * `longjmp` out of `cfw_park_run` destroys that frame. When the root frame finally returns, its
+ * `ZEND_RETURN` stores a 16-byte zval through the dead pointer, onto whatever the resuming call
+ * stack holds at that address. On PHP 8.5.12 that was live data of `execute_ex`, which left
+ * `EG(current_execute_data)` at 13 and trapped the next dispatch ("table index is out of bounds");
+ * on 8.5.2 the same write landed on bytes nobody read. Only the root has such a pointer: every
+ * other frame's `return_value` is a slot on the chain's own VM stack.
+ *
+ * The root is the eval frame, which is the only one carrying both ZEND_CALL_TOP and ZEND_CALL_CODE.
+ * The stored value is destroyed when the chain finishes, as `zend_eval_stringl` would have.
+ */
+static void park_pin_root(zend_execute_data* root) {
+	if (!root || !root->return_value || root->return_value == &park_root_ret) return;
+	if (!(ZEND_CALL_INFO(root) & ZEND_CALL_TOP) || !(ZEND_CALL_INFO(root) & ZEND_CALL_CODE)) return;
+	ZVAL_UNDEF(&park_root_ret);
+	root->return_value = &park_root_ret;
+}
+
 static void clear_pending(void) {
 	if (pending_fn) {
 		zend_string_release(pending_fn);
@@ -306,6 +330,7 @@ static void ZEND_FASTCALL park_trap_handler(zend_execute_data* call, zval* ret) 
 	saved_ret = CFW_RETURN_VALUE_USED(saved_opline) ? ret : &park_discard;
 	/* while park_floor is still this chain's, which is the only point it can be computed from */
 	saved_root = chain_root(call);
+	park_pin_root(saved_root);
 	longjmp(park_jmp, 1);
 }
 
@@ -551,6 +576,8 @@ PHP_FUNCTION(cfw_park_resume) {
 
 	if (!parked) {
 		efree(held_vm_stack);
+		zval_ptr_dtor(&park_root_ret);
+		ZVAL_UNDEF(&park_root_ret);
 		RETURN_STRING("DONE");
 	}
 

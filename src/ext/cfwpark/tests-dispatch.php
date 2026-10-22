@@ -67,6 +67,19 @@ file_put_contents(
 		return 'dropped(' . call_user_func_array(__NAMESPACE__ . '\\discarded', []) . ')';
 	}
 
+	class Sentinel
+	{
+		public function __destruct()
+		{
+			$GLOBALS['DTOR'] = ($GLOBALS['DTOR'] ?? 0) + 1;
+		}
+	}
+
+	function finish()
+	{
+		@stream_socket_client('tcp://finish.invalid:1', $e, $m, 1);
+	}
+
 	function report()
 	{
 		return ['safe' => \cfw_park_safe(), 'frames' => \cfw_park_frames()];
@@ -211,6 +224,13 @@ check(
 $seen = drive('$GLOBALS["OUT"] = \\Probe\\dropped();');
 check('a discarded result parks and completes', $seen['state'], 'DONE');
 check('and the chain still finishes', $seen['out'], 'dropped(discarded)');
+
+// the root frame's return slot was a dead C local; its value must land somewhere owned and die
+// with the chain, which an un-pinned slot never does
+unset($GLOBALS['DTOR']);
+$seen = drive($boot . '\\Probe\\finish(); return new \\Probe\\Sentinel;');
+check('a chain that returns an object completes', $seen['state'], 'DONE');
+check('and the returned object is destroyed with the chain', $GLOBALS['DTOR'] ?? 0, 1);
 
 // #endregion
 
