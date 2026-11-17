@@ -335,7 +335,8 @@ nothing.
 deliberate control and an accidentally-skipped step produce identical builds and identical logs.
 
 `bun run test` (`tools/test-patch-verify.sh`) drives all three modes over a synthetic tree with
-the two anchor macros: **19 assertions**, no Docker, no php-src. It pins that `--revert` leaves
+the two anchor macros: **19 assertions** for `patch-vm-interrupt.sh` and 23 more for
+`patch-pib-run.sh` (42 in all), no Docker, no php-src. It pins that `--revert` leaves
 the file byte-identical, which is what makes the control a real A/B. Two bugs were found writing
 it, both in a grep pattern for the C line-continuation backslash - a shell single-quoted pair is
 one BRE backslash and a lone trailing one is a grep error - so if you edit those patterns, run
@@ -416,6 +417,32 @@ A snapshot is never promoted to a release.
   x86_64 and so is the builder image, so there is no QEMU tax there -- but if CI minutes become the
   problem, narrowing the automatic trigger is the lever, not dropping the matrix.
 
-**No workflow here has ever run end to end.** Every step is derived from something verified, but the
-build needs Docker plus hours, so the first real run is the one that finds whatever is left. Expect
-the source-fetch step and the runner's disk headroom to be the first suspects.
+**The build workflow has run end to end.** On 2026-10-23 a push built all 12 variants in parallel at
+about 8 to 12 minutes each on hosted runners, not the hours QEMU costs on Apple Silicon. Its
+`publish` job then failed: `snapshot-<short sha>` is the tag, GitHub releases here are immutable once
+published, and a manual dispatch had already published that tag for the same commit, so the push
+run's attempt to replace an asset was refused. `publish` now looks for a published release of the
+tag first and skips its steps when one exists; a draft left by a half-finished run is still reused.
+
+## A non-root build on a Linux box
+
+Measured 2026-11-17 building `long64` with `PIB_RUN_EXIT=1` (first built as the separate rc
+`long64.pibfix-1`, since folded into `long64.rc`) on paisley-park in about 5 minutes of compile,
+not hours (the hours are QEMU on Apple Silicon). Running the builder container as the login user, so
+nothing ends up root-owned, hit four defects in a row, each silent until the next step:
+
+- `emcc -v` runs `git rev-parse HEAD` in the root-owned `/emsdk` checkout, and git refuses it
+  (exit 128) for another user. libtool's GNU-ld probe then fails, `archive_cmds` comes out empty,
+  and libxml2's `.la` names a `.so` that never gets built. Fix: a `.gitconfig` with
+  `safe.directory = *` in the container's `HOME`.
+- `HOME=/tmp` puts emcc's cache in the container, so every `docker compose run` regenerates it.
+  Point `HOME` at a bind-mounted rig directory.
+- `build-variant.sh` copies `ext/cfwpark` in with a root `docker run alpine`, so the compile cannot
+  write objects there. Create the directory as the login user first. A leftover root-owned copy
+  inside `ext/` is globbed by configure as a second extension, so move it out of `ext/`.
+- `-j` follows `nproc`, which ignores `cpus:`. It was not the cause here, but `cpuset` is what
+  makes `nproc` report the cap.
+
+A gate worth keeping: after `npm install` in the php-wasm checkout, every `packages/*` that holds a
+`pre.mak` or `static.mak` must appear in `npm ls -p` as `node_modules/<name>`. Without the install
+the Makefile skips those makefiles with no error.
