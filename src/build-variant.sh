@@ -181,6 +181,18 @@ if [ -n "$PHP_PINNED" ] && [ -f "$PHP_SRC/main/php_version.h" ]; then
 	}
 fi
 
+# The pib_run exit bracket edits php-wasm's own source/pib/pib.c, which is host-writable, so it needs
+# no container. Applied and verified here so a local build cannot skip it, and the negative is
+# asserted so an unpatched control cannot be built from a checkout a patched arm already used.
+if grep -q '^PIB_RUN_EXIT=1' "$RC"; then
+	bash "$ROOT/src/patch-pib-run.sh" "$SRC"
+	bash "$ROOT/src/patch-pib-run.sh" "$SRC" --verify
+elif bash "$ROOT/src/patch-pib-run.sh" "$SRC" --verify > /dev/null 2>&1; then
+	echo "source/pib/pib.c in $SRC is patched and $RC has no PIB_RUN_EXIT line"
+	echo "use a fresh php-wasm checkout, or run src/patch-pib-run.sh $SRC --revert first"
+	exit 1
+fi
+
 # The park extension, installed into php-src before configure. Copied INSIDE a container for the
 # same reason the TAILCALL patch below is: php-src is created by the builder and is not
 # host-writable on a Linux runner.

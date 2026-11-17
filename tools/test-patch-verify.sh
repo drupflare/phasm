@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Drives patch-vm-interrupt.sh through apply, --verify and --revert over a synthetic tree.
+# Drives patch-vm-interrupt.sh through apply, --verify and --revert over a synthetic tree, then
+# does the same for patch-pib-run.sh over a synthetic source/pib/pib.c.
 #
 # The real target is
 # `third_party/php8.3-src/Zend/zend_execute.c`, which arrives from a `make patched` clone that
@@ -145,6 +146,141 @@ expect_exit 1 "--verify refuses the reverted tree again" bash "$SCRIPT" "$TREE" 
 # #region a missing tree is named, not silently skipped
 expect_exit 1 "a missing zend_execute.c is refused" \
 	bash "$SCRIPT" "$TREE/nowhere" --verify
+# #endregion
+
+# #region patch-pib-run.sh
+# the real target is php-wasm's source/pib/pib.c. The fixture keeps the four anchors in the shape of
+# the file at the pinned php-wasm commit: the info.h include, the doc comment of pib_run, its
+# retVal line and the eval line, plus a pib_exec with its own zend_try so a loose pattern would
+# match the wrong function
+PIB_SCRIPT="$HERE/src/patch-pib-run.sh"
+PIB_TREE="$TREE/pibwasm"
+PIB_DIR="$PIB_TREE/source/pib"
+mkdir -p "$PIB_DIR"
+PIB_FIXTURE="$PIB_DIR/pib.c"
+
+write_pib_fixture() {
+	cat > "$PIB_FIXTURE" << 'EOF'
+#include "php.h"
+#include "pib.h"
+#include "php_ini.h"
+#include "ext/standard/info.h"
+
+char *EMSCRIPTEN_KEEPALIVE pib_exec(char *code)
+{
+	char *retVal = NULL;
+
+	zend_try
+	{
+		zend_eval_string(code, &retZv, "php-wasm exec expression");
+	}
+	zend_catch
+	{
+	}
+	zend_end_try();
+
+	return retVal;
+}
+
+/**
+ * Run some PHP code and return the exit code.
+ * 0 = good, >0 = bad.
+*/
+int EMSCRIPTEN_KEEPALIVE pib_run(char *code)
+{
+	int retVal = 255; // Unknown error.
+
+	zend_try
+	{
+		SG(headers_sent) = 0;
+
+		retVal = zend_eval_string(code, NULL, "php-wasm run script");
+
+		if(!SG(headers_sent))
+		{
+			sapi_send_headers();
+			SG(headers_sent) = 1;
+		}
+	}
+	zend_catch
+	{
+		retVal = 1; // Code died.
+	}
+	zend_end_try();
+
+	pib_flush();
+
+	return retVal;
+}
+EOF
+}
+
+sum_of() {
+	md5 -q "$1" 2> /dev/null || md5sum "$1" | cut -d' ' -f1
+}
+
+echo
+echo "patch-pib-run.sh: apply / --verify / --revert"
+
+write_pib_fixture
+PIB_BEFORE="$(sum_of "$PIB_FIXTURE")"
+expect_exit 1 "pib: --verify refuses an unpatched file" bash "$PIB_SCRIPT" "$PIB_TREE" --verify
+expect_exit 0 "pib: --revert on an unpatched file is a no-op, not an error" \
+	bash "$PIB_SCRIPT" "$PIB_TREE" --revert
+ok "pib: the no-op revert changed nothing" \
+	"$([ "$PIB_BEFORE" = "$(sum_of "$PIB_FIXTURE")" ] && echo 0 || echo 1)"
+
+expect_exit 0 "pib: apply patches the file" bash "$PIB_SCRIPT" "$PIB_TREE"
+expect_exit 0 "pib: --verify accepts the patched file" bash "$PIB_SCRIPT" "$PIB_TREE" --verify
+ok "pib: the helper is defined once" \
+	"$([ "$(grep -cF 'static void pib_settle_exit(int output_level)' "$PIB_FIXTURE")" = "1" ] && echo 0 || echo 1)"
+ok "pib: the call sits in pib_run after the eval" \
+	"$([ "$(grep -nF 'pib_settle_exit(output_level);' "$PIB_FIXTURE" | cut -d: -f1)" -gt "$(grep -nF 'php-wasm run script' "$PIB_FIXTURE" | cut -d: -f1)" ] && echo 0 || echo 1)"
+ok "pib: pib_exec was not touched" \
+	"$([ "$(grep -cF 'pib_settle_exit(output_level);' "$PIB_FIXTURE")" = "1" ] && echo 0 || echo 1)"
+ok "pib: basic_functions.h is included" \
+	"$(grep -qF '#include "ext/standard/basic_functions.h"' "$PIB_FIXTURE" && echo 0 || echo 1)"
+PIB_PATCHED="$(sum_of "$PIB_FIXTURE")"
+expect_exit 0 "pib: a second apply is a no-op" bash "$PIB_SCRIPT" "$PIB_TREE"
+ok "pib: the second apply changed nothing" \
+	"$([ "$PIB_PATCHED" = "$(sum_of "$PIB_FIXTURE")" ] && echo 0 || echo 1)"
+
+# the block is present and the call site is gone: it compiles and never settles an exit, which is
+# the shape a marker comment would accept
+perl -0pi -e 's{\n\t\tpib_settle_exit\(output_level\);\n}{}' "$PIB_FIXTURE"
+expect_exit 1 "pib: --verify catches a helper nothing calls" bash "$PIB_SCRIPT" "$PIB_TREE" --verify
+PIB_PARTIAL="$(bash "$PIB_SCRIPT" "$PIB_TREE" --verify 2>&1 || true)"
+case "$PIB_PARTIAL" in
+	*'found 0'*) ok "pib: the refusal names the call count it found" 0 ;;
+	*) ok "pib: the refusal names the call count it found (said: $PIB_PARTIAL)" 1 ;;
+esac
+
+write_pib_fixture
+bash "$PIB_SCRIPT" "$PIB_TREE" > /dev/null
+perl -0pi -e 's{#include "ext/standard/basic_functions.h"\n}{}' "$PIB_FIXTURE"
+expect_exit 1 "pib: --verify catches a missing include" bash "$PIB_SCRIPT" "$PIB_TREE" --verify
+
+write_pib_fixture
+bash "$PIB_SCRIPT" "$PIB_TREE" > /dev/null
+expect_exit 0 "pib: --revert unpatches a patched file" bash "$PIB_SCRIPT" "$PIB_TREE" --revert
+ok "pib: no pib_settle_exit residue is left" \
+	"$(grep -q 'pib_settle_exit' "$PIB_FIXTURE" && echo 1 || echo 0)"
+ok "pib: no output_level residue is left" \
+	"$(grep -q 'output_level' "$PIB_FIXTURE" && echo 1 || echo 0)"
+ok "pib: the reverted file is byte-identical to the original" \
+	"$([ "$PIB_BEFORE" = "$(sum_of "$PIB_FIXTURE")" ] && echo 0 || echo 1)"
+expect_exit 1 "pib: --verify refuses the reverted file again" bash "$PIB_SCRIPT" "$PIB_TREE" --verify
+
+# the eval line changed upstream: apply must refuse and leave the file exactly as it found it, not
+# half edited
+perl -pi -e 's{zend_eval_string\(code, NULL, "php-wasm run script"\)}{zend_eval_string_ex(code)}' "$PIB_FIXTURE"
+PIB_DRIFTED="$(sum_of "$PIB_FIXTURE")"
+expect_exit 1 "pib: apply refuses when the eval anchor drifts" bash "$PIB_SCRIPT" "$PIB_TREE"
+ok "pib: the refused apply left the file untouched" \
+	"$([ "$PIB_DRIFTED" = "$(sum_of "$PIB_FIXTURE")" ] && echo 0 || echo 1)"
+expect_exit 1 "pib: --verify refuses the drifted file" bash "$PIB_SCRIPT" "$PIB_TREE" --verify
+
+expect_exit 1 "pib: a missing pib.c is refused" bash "$PIB_SCRIPT" "$PIB_TREE/nowhere" --verify
 # #endregion
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
