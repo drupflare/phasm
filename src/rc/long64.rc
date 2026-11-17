@@ -130,3 +130,9 @@ CONFIGURE_FLAGS+= --enable-cfwpark
 # build the import arm again.
 #
 # STACK_POINTER import: off
+
+# pib_run clears an exit and runs its shutdown functions and output callbacks, so the instance
+# answers the next run. src/build-variant.sh applies src/patch-pib-run.sh at this marker and
+# verifies it before the build starts. Linked and checked 2026-11-17 against the worker's
+# tests/node/exit-lifecycle.spec.ts as `long64.pibfix-1`, which was this file plus this line.
+PIB_RUN_EXIT=1
