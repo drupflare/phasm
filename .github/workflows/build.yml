@@ -530,7 +530,23 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Look for a Published Release
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.plan.outputs.release_tag }}
+        run: |
+          draft="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft --jq .isDraft 2> /dev/null || echo none)"
+          if [ "$draft" = "false" ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::$RELEASE_TAG is already published and its assets cannot change, so the publish steps are skipped"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Download Every Variant
+        if: ${{ steps.existing.outputs.published != 'true' }}
         uses: actions/download-artifact@v8
         with:
           pattern: phasm-*-${{ github.sha }}
@@ -538,6 +554,7 @@ jobs:
           merge-multiple: true
 
       - name: Assemble the Release Body
+        if: ${{ steps.existing.outputs.published != 'true' }}
         run: |
           {
             if [ '${{ github.event_name }}' = 'workflow_dispatch' ]; then
@@ -557,6 +574,7 @@ jobs:
           ls -l staged/dist
 
       - name: Create the Prerelease as a Draft
+        if: ${{ steps.existing.outputs.published != 'true' }}
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.plan.outputs.release_tag }}
@@ -566,6 +584,7 @@ jobs:
           prerelease: ${{ github.event_name != 'workflow_dispatch' || inputs.prerelease }}
           files: staged/dist/*
       - name: Publish the Draft
+        if: ${{ steps.existing.outputs.published != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
