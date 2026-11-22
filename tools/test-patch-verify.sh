@@ -3,7 +3,7 @@
 # does the same for patch-pib-run.sh over a synthetic source/pib/pib.c.
 #
 # The real target is
-# `third_party/php8.3-src/Zend/zend_execute.c`, which arrives from a `make patched` clone that
+# `third_party/php8.5-src/Zend/zend_execute.c`, which arrives from a `make patched` clone that
 # needs Docker and a php-src checkout. What this script tests is not php-src: it is the
 # script's own state machine -- does apply reach both poll macros, does --verify distinguish
 # patched from unpatched from partially patched, does --revert leave no residue. All of that is
@@ -50,9 +50,23 @@ expect_exit() {
 # anywhere but macOS until the lint job started driving it
 TREE="$(mktemp -d -t phasmpatch.XXXXXX)"
 trap 'rm -rf "$TREE"' EXIT
-SRCDIR="$TREE/third_party/php8.3-src/Zend"
+SRCDIR="$TREE/third_party/php8.5-src/Zend"
 mkdir -p "$SRCDIR"
 FIXTURE="$SRCDIR/zend_execute.c"
+
+# apply and revert write through the builder container; this stands in for `docker compose run`
+# and logs each path it was asked to write, so a write that bypasses the container is caught
+DOCKER_LOG="$TREE/docker-writes"
+mkdir -p "$TREE/bin"
+cat > "$TREE/bin/docker" << 'EOF'
+#!/usr/bin/env bash
+rel="${*: -1}"
+rel="${rel#cat > /src/}"
+echo "$rel" >> "$DOCKER_LOG"
+cat > "$rel"
+EOF
+chmod +x "$TREE/bin/docker"
+export PATH="$TREE/bin:$PATH" DOCKER_LOG
 
 # the two anchor macros in the exact shape the script refuses to patch without. Taken from the
 # shape the script itself asserts, so a change to php-src that breaks the real patch also
@@ -91,13 +105,23 @@ ok "the no-op revert changed nothing" "$([ "$BEFORE" = "$AFTER_NOOP" ] && echo 0
 # #region apply, then verify
 expect_exit 0 "apply patches the tree" bash "$SCRIPT" "$TREE"
 expect_exit 0 "--verify accepts the patched tree" bash "$SCRIPT" "$TREE" --verify
+ok "apply wrote zend_execute.c through the builder container" \
+	"$(grep -q 'Zend/zend_execute.c' "$DOCKER_LOG" && echo 0 || echo 1)"
+ok "the JSPI yield has a stub for builds without it" \
+	"$(grep -q '^static int cfw_vm_yield' "$FIXTURE" && echo 0 || echo 1)"
 
 # the doubled backslash is a BRE matching one literal backslash, which is how the C macro
 # continues its line; it is not a botched quote escape
 # shellcheck disable=SC1003
-TICKS="$(grep -c 'ZEND_WASM_TICK(); \\' "$FIXTURE" || true)"
+TICKS="$(grep -c 'ZEND_WASM_POLL(execute_data, opline); \\' "$FIXTURE" || true)"
 ok "the tick reached both poll macros, not one ($TICKS)" \
 	"$([ "$TICKS" = "2" ] && echo 0 || echo 1)"
+ok "the signal word is declared" \
+	"$(grep -qF 'ZEND_API volatile uint32_t __instance_signal' "$FIXTURE" && echo 0 || echo 1)"
+ok "the poll expansion tests the signal word and the tick" \
+	"$(grep -qF 'if (UNEXPECTED(__instance_signal | zend_wasm_tick_due())) zend_wasm_poll_slow(ed, op)' "$FIXTURE" && echo 0 || echo 1)"
+ok "the poll handler takes a writable frame and hands parks to cfwpark" \
+	"$(grep -qF 'static zend_never_inline void zend_wasm_poll_slow(zend_execute_data *ed, const zend_op *op)' "$FIXTURE" && grep -qF 'cfw_park_prepare(ed, op, reason)' "$FIXTURE" && grep -qF 'cfw_park_jump();' "$FIXTURE" && echo 0 || echo 1)"
 for symbol in zend_wasm_slice_arm zend_wasm_slice_mask zend_wasm_slice_stat; do
 	ok "$symbol is exported" \
 		"$(grep -q "EMSCRIPTEN_KEEPALIVE.*$symbol" "$FIXTURE" && echo 0 || echo 1)"
@@ -107,7 +131,7 @@ expect_exit 0 "a second apply is a no-op" bash "$SCRIPT" "$TREE"
 # the doubled backslash is a BRE matching one literal backslash, which is how the C macro
 # continues its line; it is not a botched quote escape
 # shellcheck disable=SC1003
-TICKS_AGAIN="$(grep -c 'ZEND_WASM_TICK(); \\' "$FIXTURE" || true)"
+TICKS_AGAIN="$(grep -c 'ZEND_WASM_POLL(execute_data, opline); \\' "$FIXTURE" || true)"
 ok "the second apply did not double the tick ($TICKS_AGAIN)" \
 	"$([ "$TICKS_AGAIN" = "2" ] && echo 0 || echo 1)"
 # #endregion
@@ -115,7 +139,7 @@ ok "the second apply did not double the tick ($TICKS_AGAIN)" \
 # #region a PARTIALLY patched tree, which is the case a marker comment would miss
 # the block is present and the tick is gone. This compiles cleanly and does nothing, so it is
 # the failure --verify exists for rather than an invented edge case
-perl -0pi -e 's{\t\tZEND_WASM_TICK\(\); \\\n}{}g' "$FIXTURE"
+perl -0pi -e 's{\t\tZEND_WASM_POLL\(execute_data, opline\); \\\n}{}g' "$FIXTURE"
 expect_exit 1 "--verify catches a block whose tick never reached the poll macros" \
 	bash "$SCRIPT" "$TREE" --verify
 # and it says which shape is wrong rather than only that something is.
@@ -128,14 +152,36 @@ case "$PARTIAL_OUT" in
 esac
 # #endregion
 
+# #region a block without its signal word
+write_fixture
+bash "$SCRIPT" "$TREE" > /dev/null
+perl -0pi -e 's{ZEND_API volatile uint32_t __instance_signal __attribute__\(\(aligned\(4\)\)\) = 0;\n}{}' "$FIXTURE"
+expect_exit 1 "--verify catches a block with no signal word" bash "$SCRIPT" "$TREE" --verify
+# #endregion
+
+# #region a moved poll macro is refused before anything is written
+# a line between the loop macro's head and its body. Before the per-macro count, apply put the tick
+# at one site and went on; now it must refuse and leave the file and the container write alone
+write_fixture
+perl -0pi -e 's{(#define ZEND_VM_LOOP_INTERRUPT_CHECK\(\) do \{ \\\n)}{$1\t\t/* moved */ \\\n}' "$FIXTURE"
+DRIFTED="$(md5 -q "$FIXTURE" 2> /dev/null || md5sum "$FIXTURE" | cut -d' ' -f1)"
+: > "$DOCKER_LOG"
+expect_exit 1 "apply refuses when the loop poll macro moved" bash "$SCRIPT" "$TREE"
+ok "the refused apply left the file untouched" \
+	"$([ "$DRIFTED" = "$(md5 -q "$FIXTURE" 2> /dev/null || md5sum "$FIXTURE" | cut -d' ' -f1)" ] && echo 0 || echo 1)"
+ok "the refused apply wrote nothing through the container" "$([ -s "$DOCKER_LOG" ] && echo 1 || echo 0)"
+# #endregion
+
 # #region revert leaves no residue
 write_fixture
 bash "$SCRIPT" "$TREE" > /dev/null
 expect_exit 0 "--revert unpatches a patched tree" bash "$SCRIPT" "$TREE" --revert
 ok "no zend_wasm_tick residue is left" \
 	"$(grep -q 'zend_wasm_tick' "$FIXTURE" && echo 1 || echo 0)"
-ok "no ZEND_WASM_TICK call site is left" \
-	"$(grep -q 'ZEND_WASM_TICK' "$FIXTURE" && echo 1 || echo 0)"
+ok "no ZEND_WASM_POLL call site is left" \
+	"$(grep -q 'ZEND_WASM_POLL' "$FIXTURE" && echo 1 || echo 0)"
+ok "no __instance_signal residue is left" \
+	"$(grep -q '__instance_signal' "$FIXTURE" && echo 1 || echo 0)"
 AFTER_REVERT="$(md5 -q "$FIXTURE" 2> /dev/null || md5sum "$FIXTURE" | cut -d' ' -f1)"
 # byte-identical, which is what makes the unpatched control build a real A/B
 ok "the reverted file is byte-identical to the original" \

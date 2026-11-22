@@ -24,8 +24,9 @@
 # generated header is #included at its bottom, so one file covers every poll site
 # and a `php zend_vm_gen.php` regeneration cannot wipe it.
 #
-# Hot path cost: one global load, one decrement, one store, one branch per poll
-# site. zend_wasm_tick_fired() is zend_never_inline so nothing else lands inline.
+# Hot path cost: one load of the signal word, one decrement, one store, one branch per poll
+# site. zend_wasm_tick_fired() and zend_wasm_poll_slow() are zend_never_inline so nothing else
+# lands inline.
 #
 # Safety; both rules are enforced in C rather than trusted to the host:
 #   - the handler masks itself for the duration of its own yield, so a suspension
@@ -48,13 +49,31 @@
 set -euo pipefail
 
 SRC="${1:-/tmp/phpwasm-build/php-wasm}"
-PHP_VERSION="${PHP_VERSION:-8.3}"
-F="$SRC/third_party/php${PHP_VERSION}-src/Zend/zend_execute.c"
+PHP_VERSION="${PHP_VERSION:-8.5}"
+REL="third_party/php${PHP_VERSION}-src/Zend/zend_execute.c"
+F="$SRC/$REL"
 MODE="${2:-apply}"
 
 [ -f "$F" ] || {
 	echo "no zend_execute.c at $F"
 	exit 1
+}
+
+# php-src belongs to the builder's uid on a linux runner: the host reads, the container writes.
+# the edit lands in a file first, so an empty result can never truncate zend_execute.c.
+write_back() {
+	[ -s "$1" ] || {
+		echo "the edit produced nothing; refusing to write $F"
+		exit 1
+	}
+	(
+		cd "$SRC" \
+			&& docker compose -p phpwasm run -T --rm -e OUTER_UID="$(id -u)" -w /src \
+				emscripten-builder bash -lc "cat > /src/$REL"
+	) < "$1" || {
+		echo "the in-container write failed; see the docker output above"
+		exit 1
+	}
 }
 
 # --verify answers "is this tree patched, and correctly?" without reading the file by hand.
@@ -80,13 +99,34 @@ if [ "$MODE" = "--verify" ]; then
 	# the doubled backslash is a BRE matching one literal backslash, which is how the C macro
 	# continues its line; it is not a botched quote escape
 	# shellcheck disable=SC1003
-	TICKS="$(grep -c 'ZEND_WASM_TICK(); \\' "$F" || true)"
+	TICKS="$(grep -c 'ZEND_WASM_POLL(execute_data, opline); \\' "$F" || true)"
 	# exactly two: ZEND_VM_INTERRUPT_CHECK and ZEND_VM_LOOP_INTERRUPT_CHECK. The `# define`
-	# lines spell it `ZEND_WASM_TICK() do {` with no semicolon, so they do not count themselves
+	# lines spell it `ZEND_WASM_POLL(ed, op)` with no semicolon, so they do not count themselves
 	if [ "$TICKS" != "2" ]; then
 		echo "VERIFY FAIL: expected 2 tick call sites in the poll macros, found $TICKS"
 		FAILED=1
 	fi
+
+	grep -qF 'ZEND_API volatile uint32_t __instance_signal' "$F" || {
+		echo "VERIFY FAIL: no __instance_signal word in $F"
+		FAILED=1
+	}
+	grep -qF 'if (UNEXPECTED(__instance_signal | zend_wasm_tick_due())) zend_wasm_poll_slow(ed, op)' "$F" || {
+		echo "VERIFY FAIL: the poll expansion does not test the signal word and the tick"
+		FAILED=1
+	}
+	grep -qF 'static zend_never_inline void zend_wasm_poll_slow(zend_execute_data *ed, const zend_op *op)' "$F" || {
+		echo "VERIFY FAIL: zend_wasm_poll_slow does not take a writable frame, so it cannot park"
+		FAILED=1
+	}
+	grep -qF 'int ready = cfw_park_prepare(ed, op, reason);' "$F" || {
+		echo "VERIFY FAIL: the poll does not ask cfwpark whether it may park"
+		FAILED=1
+	}
+	grep -qF 'cfw_park_jump();' "$F" || {
+		echo "VERIFY FAIL: the poll does not jump to the park"
+		FAILED=1
+	}
 
 	for symbol in zend_wasm_slice_arm zend_wasm_slice_mask zend_wasm_slice_stat; do
 		grep -q "EMSCRIPTEN_KEEPALIVE.*$symbol" "$F" || {
@@ -110,9 +150,11 @@ if [ "$MODE" = "--revert" ]; then
 		echo "not patched, nothing to revert: $F"
 		exit 0
 	}
-	python3 - "$F" << 'PY'
+	NEW_FILE="$(mktemp -t vmint.XXXXXX)"
+	trap 'rm -f "$NEW_FILE"' EXIT
+	python3 - "$F" "$NEW_FILE" << 'PY'
 import sys
-path = sys.argv[1]
+path, out = sys.argv[1], sys.argv[2]
 src = open(path).read()
 start = src.index('/* #region drupflare wasm slice interrupts */')
 end = src.index('/* #endregion */', start) + len('/* #endregion */')
@@ -120,10 +162,15 @@ end = src.index('/* #endregion */', start) + len('/* #endregion */')
 while end < len(src) and src[end] == '\n':
 	end += 1
 src = src[:start] + src[end:]
-src = src.replace('\t\tZEND_WASM_TICK(); \\\n', '')
+src = src.replace('\t\tZEND_WASM_POLL(execute_data, opline); \\\n', '')
 assert 'zend_wasm_tick' not in src, 'revert left residue'
-open(path, 'w').write(src)
+open(out, 'w').write(src)
 PY
+	write_back "$NEW_FILE"
+	if grep -q 'zend_wasm_tick_countdown' "$F"; then
+		echo "the revert did not land in $F"
+		exit 1
+	fi
 	echo "reverted $F"
 	exit 0
 fi
@@ -142,6 +189,7 @@ grep -q '^#define ZEND_VM_INTERRUPT_CHECK() do { \\$' "$F" \
 BLOCK="$(
 	cat << 'EOF'
 /* #region drupflare wasm slice interrupts */
+#if ZEND_VM_KIND == ZEND_VM_KIND_CALL
 #ifdef __EMSCRIPTEN__
 #include <stdint.h>
 #include <emscripten/emscripten.h>
@@ -150,12 +198,21 @@ BLOCK="$(
 /* the suspending import; with -sJSPI the glue wraps this in
    WebAssembly.Suspending (library_async.js:58) because EM_ASYNC_JS names it
    __asyncjs__cfw_vm_yield. returns 0 to continue, nonzero to abort. */
+#ifdef CFW_VM_JSPI
 EM_ASYNC_JS(int, cfw_vm_yield, (int seq), {
 	var f = (typeof Module !== "undefined" && Module["cfwVmYield"]) || globalThis["cfwVmYield"];
 	if (!f) { return 0; }
 	var r = await f(seq);
 	return r | 0;
 });
+#else
+/* no suspension without JSPI, so the yield always continues */
+static int cfw_vm_yield(int seq)
+{
+	(void)seq;
+	return 0;
+}
+#endif
 
 ZEND_API int32_t zend_wasm_tick_countdown = INT32_MAX;
 ZEND_API int32_t zend_wasm_tick_period = 0;
@@ -164,7 +221,18 @@ ZEND_API int32_t zend_wasm_tick_yield_mode = 0;
 ZEND_API uint32_t zend_wasm_tick_fires = 0;
 ZEND_API uint32_t zend_wasm_tick_yields = 0;
 ZEND_API uint32_t zend_wasm_tick_aborts = 0;
+ZEND_API volatile uint32_t __instance_signal __attribute__((aligned(4))) = 0;
+static uint32_t zend_wasm_signal_polls = 0;
 static void (*zend_wasm_prev_interrupt)(zend_execute_data *) = NULL;
+
+/* the park state and its setjmp live in cfwpark.c */
+#define CFW_PARK_BUDGET 1
+#define CFW_PARK_SIGNAL 2
+int cfw_park_prepare(zend_execute_data *ed, const zend_op *op, int reason);
+void cfw_park_jump(void);
+static uint32_t zend_wasm_park_refusals = 0;
+static uint32_t zend_wasm_park_parks = 0;
+static uint32_t zend_wasm_park_signal_parks = 0;
 
 /* never inlined: the poll sites must stay dec-and-branch */
 static zend_never_inline void zend_wasm_tick_fired(void)
@@ -177,6 +245,43 @@ static zend_never_inline void zend_wasm_tick_fired(void)
 		}
 	} else {
 		zend_wasm_tick_countdown = INT32_MAX;
+	}
+}
+
+static inline int zend_wasm_tick_due(void)
+{
+	return --zend_wasm_tick_countdown <= 0;
+}
+
+/* parks here when the tick or the signal word asks for it, else falls back to the tick callback */
+static zend_never_inline void zend_wasm_poll_slow(zend_execute_data *ed, const zend_op *op)
+{
+	int reason = __instance_signal ? CFW_PARK_SIGNAL : CFW_PARK_BUDGET;
+
+	if (__instance_signal) {
+		zend_wasm_signal_polls++;
+	}
+	if (zend_wasm_tick_mask == 0) {
+		int ready = cfw_park_prepare(ed, op, reason);
+
+		if (ready == 2) {
+			zend_wasm_park_parks++;
+			if (reason == CFW_PARK_SIGNAL) {
+				zend_wasm_park_signal_parks++;
+			}
+			zend_wasm_tick_countdown = INT32_MAX;
+			cfw_park_jump();
+		}
+		if (ready == 1) {
+			zend_wasm_park_refusals++;
+			if (zend_wasm_tick_period > 0) {
+				zend_wasm_tick_countdown = 1;
+			}
+			return;
+		}
+	}
+	if (zend_wasm_tick_countdown <= 0) {
+		zend_wasm_tick_fired();
 	}
 }
 
@@ -246,17 +351,21 @@ EMSCRIPTEN_KEEPALIVE uint32_t zend_wasm_slice_stat(int which)
 		case 4:  return (uint32_t)zend_wasm_tick_mask;
 		case 5:  return (uint32_t)zend_wasm_tick_yield_mode;
 		case 6:  return (uint32_t)zend_wasm_tick_countdown;
+		case 7:  return zend_wasm_signal_polls;
+		case 8:  return zend_wasm_park_refusals;
+		case 9:  return zend_wasm_park_parks;
+		case 10: return zend_wasm_park_signal_parks;
 		default: return 0;
 	}
 }
 
-# define ZEND_WASM_TICK() do { \
-		if (UNEXPECTED(--zend_wasm_tick_countdown <= 0)) { \
-			zend_wasm_tick_fired(); \
-		} \
-	} while (0)
+# define ZEND_WASM_POLL(ed, op) \
+	if (UNEXPECTED(__instance_signal | zend_wasm_tick_due())) zend_wasm_poll_slow(ed, op)
 #else
-# define ZEND_WASM_TICK() do { } while (0)
+# define ZEND_WASM_POLL(ed, op) do { } while (0)
+#endif
+#else
+#error "drupflare wasm slice interrupts need ZEND_VM_KIND_CALL: execute_data and opline must be in scope"
 #endif
 /* #endregion */
 
@@ -265,35 +374,35 @@ EOF
 
 # GNU mktemp rejects a template with no XXXXXX, so the macOS-only form is a live failure on a runner
 BLOCK_FILE="$(mktemp -t vmint.XXXXXX)"
+NEW_FILE="$(mktemp -t vmint.XXXXXX)"
 printf '%s\n' "$BLOCK" > "$BLOCK_FILE"
-trap 'rm -f "$BLOCK_FILE"' EXIT
+trap 'rm -f "$BLOCK_FILE" "$NEW_FILE"' EXIT
 
-python3 - "$F" "$BLOCK_FILE" << 'PY'
+python3 - "$F" "$BLOCK_FILE" "$NEW_FILE" << 'PY'
 import sys
-path, block_file = sys.argv[1], sys.argv[2]
+path, block_file, out = sys.argv[1], sys.argv[2], sys.argv[3]
 src = open(path).read()
 block = open(block_file).read()
 anchor = "#define ZEND_VM_INTERRUPT_CHECK() do { \\\n"
-assert anchor in src, "anchor missing"
+assert src.count(anchor) == 1, "anchor missing"
 src = src.replace(anchor, block + anchor, 1)
-# add the tick to both poll macros
-src = src.replace(
-	"#define ZEND_VM_INTERRUPT_CHECK() do { \\\n\t\tif (UNEXPECTED(zend_atomic_bool_load_ex(&EG(vm_interrupt)))) { \\",
-	"#define ZEND_VM_INTERRUPT_CHECK() do { \\\n\t\tZEND_WASM_TICK(); \\\n\t\tif (UNEXPECTED(zend_atomic_bool_load_ex(&EG(vm_interrupt)))) { \\",
-	1)
-src = src.replace(
-	"#define ZEND_VM_LOOP_INTERRUPT_CHECK() do { \\\n\t\tif (UNEXPECTED(zend_atomic_bool_load_ex(&EG(vm_interrupt)))) { \\",
-	"#define ZEND_VM_LOOP_INTERRUPT_CHECK() do { \\\n\t\tZEND_WASM_TICK(); \\\n\t\tif (UNEXPECTED(zend_atomic_bool_load_ex(&EG(vm_interrupt)))) { \\",
-	1)
-open(path, 'w').write(src)
+# each poll macro must match exactly once, or the tick would silently land at one site
+tick = "\t\tif (UNEXPECTED(zend_atomic_bool_load_ex(&EG(vm_interrupt)))) { \\"
+for macro in ["ZEND_VM_INTERRUPT_CHECK", "ZEND_VM_LOOP_INTERRUPT_CHECK"]:
+	head = "#define " + macro + "() do { \\\n"
+	assert src.count(head + tick) == 1, macro + " body moved"
+	src = src.replace(head + tick, head + "\t\tZEND_WASM_POLL(execute_data, opline); \\\n" + tick, 1)
+open(out, 'w').write(src)
 PY
+
+write_back "$NEW_FILE"
 
 # the doubled backslash is a BRE matching one literal backslash, which is how the C
 # macro continues its line; it is not a botched quote escape
 # shellcheck disable=SC1003
-grep -q 'ZEND_WASM_TICK(); \\' "$F" || {
+grep -q 'ZEND_WASM_POLL(execute_data, opline); \\' "$F" || {
 	echo "tick did not reach the poll macros"
 	exit 1
 }
 echo "patched $F"
-grep -c 'ZEND_WASM_TICK();' "$F"
+grep -c 'ZEND_WASM_POLL(execute_data, opline);' "$F"

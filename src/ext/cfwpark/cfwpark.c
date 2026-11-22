@@ -38,9 +38,17 @@
 #include "zend_exceptions.h"
 #include "ext/standard/info.h"
 #include "php_streams.h"
+#include "zend_smart_str.h"
 #include <setjmp.h>
 
 #define CFW_MAX_TRAPS 32
+
+/* the reasons and kinds the patched poll (src/patch-vm-interrupt.sh) and this file both use */
+#define CFW_PARK_BUDGET 1
+#define CFW_PARK_SIGNAL 2
+#define CFW_HELD_TRAP 1
+#define CFW_HELD_INTERRUPT 2
+#define CFW_PARK_LOG_MAX 65536
 
 static jmp_buf park_jmp;
 static int park_armed = 0;
@@ -61,6 +69,9 @@ static zval park_discard;
 /* where the chain root's own return value goes; see park_pin_root */
 static zval park_root_ret;
 
+/* kind:chain strings for each interrupt park since the last cfw_park_log() call */
+static zval park_log;
+
 static int held = 0;
 static zend_execute_data* held_call;
 static zend_execute_data* held_caller;
@@ -69,6 +80,10 @@ static zval* held_ret;
 static zval* held_vm_stack_top;
 static zval* held_vm_stack_end;
 static zend_vm_stack held_vm_stack;
+/* the frame a poll parked, and which kind of park is held (CFW_HELD_*) */
+static zend_execute_data* held_frame;
+static int held_kind = 0;
+static zend_execute_data* saved_frame;
 /**
  * The outermost frame of the parked chain, which is what a RESUMED chain stops the predicate on.
  *
@@ -334,6 +349,84 @@ static void ZEND_FASTCALL park_trap_handler(zend_execute_data* call, zval* ret) 
 	longjmp(park_jmp, 1);
 }
 
+/**
+ * Whether an interrupt park at `ed` would lose a C frame.
+ *
+ * Every frame from `ed` to the floor must be user code, and exactly one may carry
+ * ZEND_CALL_TOP: the outermost, which is the eval root (it always has TOP, see SCOPE-phpsrc
+ * V1). Any other TOP frame is an activation entered from C (zend_call_function, a generator
+ * resume, a trampoline) with C locals above it, so the park is refused. A `__get`, an
+ * `array_map` callback and a generator body are all of that kind.
+ */
+static int interrupt_park_refused(zend_execute_data* ed) {
+	zend_execute_data* ex = ed;
+	zend_execute_data* last = NULL;
+	int tops = 0;
+	while (ex != park_floor) {
+		if (!ex || !ex->func || !ZEND_USER_CODE(ex->func->common.type)) return 1;
+		if (ZEND_CALL_INFO(ex) & ZEND_CALL_TOP) tops++;
+		last = ex;
+		ex = ex->prev_execute_data;
+	}
+	return !last || tops != 1 || !(ZEND_CALL_INFO(last) & ZEND_CALL_TOP);
+}
+
+static void park_log_add(zend_execute_data* ed, int reason) {
+	if (Z_TYPE(park_log) != IS_ARRAY) array_init(&park_log);
+	if (zend_hash_num_elements(Z_ARRVAL(park_log)) >= CFW_PARK_LOG_MAX) return;
+
+	smart_str s = {0};
+	smart_str_appends(&s, reason == CFW_PARK_SIGNAL ? "SIGNAL:" : "BUDGET:");
+	for (zend_execute_data* ex = ed; ex && ex != park_floor; ex = ex->prev_execute_data) {
+		if (ex != ed) smart_str_appendc(&s, '>');
+		if (ex->func && ex->func->common.function_name) {
+			smart_str_append(&s, ex->func->common.function_name);
+		}
+		else {
+			smart_str_appends(&s, "{main}");
+		}
+	}
+	smart_str_0(&s);
+	add_next_index_str(&park_log, s.s);
+}
+
+/**
+ * The poll's half of an interrupt park; called from zend_wasm_poll_slow before it may park.
+ *
+ * Returns 0 when parking is not allowed in this state (not armed, an exception or a fiber, or
+ * an extension replaced zend_execute_ex), 1 when a C frame would be lost (the poll counts a
+ * refusal and retries later), and 2 when the park is recorded: the caller must then call
+ * cfw_park_jump().
+ */
+int cfw_park_prepare(zend_execute_data* ed, const zend_op* op, int reason) {
+	if (!park_armed || EG(exception) || EG(active_fiber) || zend_execute_ex != execute_ex) return 0;
+	if (!ed || !ed->func || !ZEND_USER_CODE(ed->func->common.type)) return 0;
+	if (interrupt_park_refused(ed)) return 1;
+
+	ed->opline = op;
+	saved_frame = ed;
+	saved_root = chain_root(ed);
+	park_pin_root(saved_root);
+	clear_pending();
+	park_log_add(ed, reason);
+	return 2;
+}
+
+void cfw_park_jump(void) {
+	longjmp(park_jmp, CFW_HELD_INTERRUPT);
+}
+
+/* the last park's state, kept until the next resume; the trapped fields are only read for a trap */
+static void park_hold(int kind) {
+	held_kind = kind;
+	held_call = saved_call;
+	held_caller = saved_caller;
+	held_opline = saved_opline;
+	held_ret = saved_ret;
+	held_frame = saved_frame;
+	held = 1;
+}
+
 /** Installs the trap on one internal function; returns false when the name is not one. */
 PHP_FUNCTION(cfw_park_trap) {
 	zend_string* name;
@@ -424,21 +517,19 @@ PHP_FUNCTION(cfw_park_run) {
 
 	zend_execute_data* outer_floor = park_floor;
 	park_floor = host_ced;
-	int parked;
-	if (setjmp(park_jmp) == 0) {
+	int parked = setjmp(park_jmp);
+	if (parked == 0) {
 		park_armed = 1;
 		zend_try {
 			zend_eval_string(ZSTR_VAL(code), NULL, "cfw-request");
 		}
 		zend_end_try();
 		park_armed = 0;
-		parked = 0;
 	}
 	else {
 		/* the longjmp jumped over zend_end_try(), so EG(bailout) is a dead frame */
 		park_armed = 0;
 		EG(bailout) = outer_bailout;
-		parked = 1;
 	}
 
 	held_vm_stack = EG(vm_stack);
@@ -456,14 +547,10 @@ PHP_FUNCTION(cfw_park_run) {
 		RETURN_STRING("DONE");
 	}
 
-	held_call = saved_call;
-	held_caller = saved_caller;
-	held_opline = saved_opline;
-	held_ret = saved_ret;
 	/* the chain's root, recorded once here and never recomputed on a resume */
 	held_root = saved_root;
-	held = 1;
-	RETURN_STRING("PARKED");
+	park_hold(parked);
+	RETURN_STRING(parked == CFW_HELD_INTERRUPT ? "PARKED_INTERRUPT" : "PARKED");
 }
 
 /** The operation the host must perform, or null when nothing is parked. */
@@ -497,6 +584,10 @@ PHP_FUNCTION(cfw_park_resume) {
 
 	if (!held) {
 		zend_throw_error(NULL, "cfw: nothing is parked");
+		RETURN_THROWS();
+	}
+	if (held_kind != CFW_HELD_TRAP) {
+		zend_throw_error(NULL, "cfw: the chain stopped at a poll; use cfw_park_resume_interrupt()");
 		RETURN_THROWS();
 	}
 	held = 0;
@@ -548,8 +639,8 @@ PHP_FUNCTION(cfw_park_resume) {
 	held_root->prev_execute_data = host_ced;
 	zend_execute_data* outer_floor = park_floor;
 	park_floor = host_ced;
-	int parked;
-	if (setjmp(park_jmp) == 0) {
+	int parked = setjmp(park_jmp);
+	if (parked == 0) {
 		park_armed = 1;
 		EG(current_execute_data) = held_caller;
 		zend_try {
@@ -557,12 +648,10 @@ PHP_FUNCTION(cfw_park_resume) {
 		}
 		zend_end_try();
 		park_armed = 0;
-		parked = 0;
 	}
 	else {
 		park_armed = 0;
 		EG(bailout) = outer_bailout;
-		parked = 1;
 	}
 
 	held_vm_stack = EG(vm_stack);
@@ -581,14 +670,85 @@ PHP_FUNCTION(cfw_park_resume) {
 		RETURN_STRING("DONE");
 	}
 
-	held_call = saved_call;
-	held_caller = saved_caller;
-	held_opline = saved_opline;
-	held_ret = saved_ret;
 	/* held_root is NOT reassigned: the chain's root does not move, and recomputing it here would
 	 * read one frame short of it, since the floor is already sitting on it */
-	held = 1;
-	RETURN_STRING("PARKED");
+	park_hold(parked);
+	RETURN_STRING(parked == CFW_HELD_INTERRUPT ? "PARKED_INTERRUPT" : "PARKED");
+}
+
+/**
+ * Resumes a chain that stopped at a poll. Nothing is answered: the frame already holds its state.
+ *
+ * The host clears `__instance_signal` and re-arms the tick before the call, or the entry poll parks
+ * again at once. Answers like cfw_park_run; a trapped call inside the resumed chain answers PARKED.
+ */
+PHP_FUNCTION(cfw_park_resume_interrupt) {
+	ZEND_PARSE_PARAMETERS_NONE();
+
+	if (!held || held_kind != CFW_HELD_INTERRUPT) {
+		zend_throw_error(NULL, "cfw: no interrupt park is held");
+		RETURN_THROWS();
+	}
+	held = 0;
+
+	zend_execute_data* host_ced = EG(current_execute_data);
+	JMP_BUF* outer_bailout = EG(bailout);
+	zend_vm_stack host_stack = EG(vm_stack);
+	zval* host_top = EG(vm_stack_top);
+	zval* host_end = EG(vm_stack_end);
+
+	EG(vm_stack) = held_vm_stack;
+	EG(vm_stack_top) = held_vm_stack_top;
+	EG(vm_stack_end) = held_vm_stack_end;
+
+	/* relinked as in cfw_park_resume: the chain hangs off this call */
+	held_root->prev_execute_data = host_ced;
+	zend_execute_data* outer_floor = park_floor;
+	park_floor = host_ced;
+	int parked = setjmp(park_jmp);
+	if (parked == 0) {
+		park_armed = 1;
+		EG(current_execute_data) = held_frame;
+		zend_try {
+			execute_ex(held_frame);
+		}
+		zend_end_try();
+		park_armed = 0;
+	}
+	else {
+		park_armed = 0;
+		EG(bailout) = outer_bailout;
+	}
+
+	held_vm_stack = EG(vm_stack);
+	held_vm_stack_top = EG(vm_stack_top);
+	held_vm_stack_end = EG(vm_stack_end);
+	EG(current_execute_data) = host_ced;
+	EG(vm_stack) = host_stack;
+	EG(vm_stack_top) = host_top;
+	EG(vm_stack_end) = host_end;
+	park_floor = outer_floor;
+
+	if (!parked) {
+		efree(held_vm_stack);
+		zval_ptr_dtor(&park_root_ret);
+		ZVAL_UNDEF(&park_root_ret);
+		RETURN_STRING("DONE");
+	}
+
+	park_hold(parked);
+	RETURN_STRING(parked == CFW_HELD_INTERRUPT ? "PARKED_INTERRUPT" : "PARKED");
+}
+
+/** The interrupt parks since the last call, as "KIND:chain" strings, innermost frame first. */
+PHP_FUNCTION(cfw_park_log) {
+	ZEND_PARSE_PARAMETERS_NONE();
+	if (Z_TYPE(park_log) != IS_ARRAY) {
+		array_init(return_value);
+		return;
+	}
+	ZVAL_COPY_VALUE(return_value, &park_log);
+	ZVAL_UNDEF(&park_log);
 }
 
 /* hand-written rather than generated from a stub file: without arginfo the engine prints
@@ -614,12 +774,20 @@ ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_cfw_park_resume, 0, 1, IS_STRING
 ZEND_ARG_TYPE_INFO(0, answer, IS_MIXED, 0)
 ZEND_END_ARG_INFO()
 
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_cfw_park_resume_interrupt, 0, 0, IS_STRING, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_WITH_RETURN_TYPE_INFO_EX(arginfo_cfw_park_log, 0, 0, IS_ARRAY, 0)
+ZEND_END_ARG_INFO()
+
 static const zend_function_entry cfwpark_functions[] = {
 	ZEND_FE(cfw_park_trap, arginfo_cfw_park_trap) ZEND_FE(cfw_park_safe, arginfo_cfw_park_safe)
 		ZEND_FE(cfw_park_frames, arginfo_cfw_park_frames)
 			ZEND_FE(cfw_park_run, arginfo_cfw_park_run)
 				ZEND_FE(cfw_park_pending, arginfo_cfw_park_pending)
-					ZEND_FE(cfw_park_resume, arginfo_cfw_park_resume) ZEND_FE_END
+					ZEND_FE(cfw_park_resume, arginfo_cfw_park_resume)
+						ZEND_FE(cfw_park_resume_interrupt, arginfo_cfw_park_resume_interrupt)
+							ZEND_FE(cfw_park_log, arginfo_cfw_park_log) ZEND_FE_END
 };
 
 zend_module_entry cfwpark_module_entry = {
