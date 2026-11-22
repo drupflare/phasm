@@ -18,6 +18,13 @@ RC="$ROOT/src/rc/${VARIANT}.rc"
 OUT="${OUT:-$ROOT/vendor/static-${VARIANT}}"
 PRISTINE=/tmp/phpwasm-build/vmgen-pristine
 
+# configure writes the `configured` stamp as the builder's uid inside a php-src the builder created,
+# so a host rm is refused on any rebuild of that tree; the container removes it
+drop_configured() {
+	[ -e "$1/configured" ] || return 0
+	docker run --rm -v "$1:/w" alpine:3 rm -f /w/configured
+}
+
 # an unproven arm lives as .rc.pending so the push matrix cannot schedule it; building one
 # explicitly by name is how it earns the rename
 if [ ! -f "$RC" ] && [ -f "$RC.pending" ]; then
@@ -65,6 +72,8 @@ grep -q 'MEMORY64=1' "$RC" && COMPILE_FLAGS="$COMPILE_FLAGS -sMEMORY64=1"
 # Zend/zend_long.h sets ZEND_ENABLE_ZVAL_LONG64 from compiler predefines and derives
 # SIZEOF_ZEND_LONG from it; no configure macro is involved, so a -D is the whole mechanism
 grep -q 'ZEND_LONG64=1' "$RC" && COMPILE_FLAGS="$COMPILE_FLAGS -DZEND_ENABLE_ZVAL_LONG64=1"
+# the patched VM yield suspends only under JSPI; patch-vm-interrupt.sh stubs it otherwise
+grep -q 'JSPI=1' "$RC" && COMPILE_FLAGS="$COMPILE_FLAGS -DCFW_VM_JSPI=1"
 # -mbulk-memory is an LLVM TARGET FEATURE, so it has to be on the compile line for every object;
 # putting it only on the link leaves each object already lowered to a libc memcpy call
 grep -q 'BULK_MEMORY=1' "$RC" && {
@@ -112,6 +121,15 @@ grep -q 'TABLE_GROWTH=1' "$RC" && {
 # what cost ~8%, and an import shares it with a side module just as well. The link keeps the global
 # module-private; src/import-stack-pointer.mjs moves it to an import after the build, below.
 grep -q 'STACK_POINTER=import' "$RC" && LINK_FLAGS="$LINK_FLAGS -sALLOW_TABLE_GROWTH=1"
+# the shim finds __instance_signal among the exports; wasm-ld refuses to export a symbol the tree
+# does not define, so the rc flag is checked against the patched source here rather than at link
+grep -q 'INSTANCE_SIGNAL=1' "$RC" && {
+	grep -qF 'ZEND_API volatile uint32_t __instance_signal' "$SRC/third_party/php${PHP_VERSION}-src/Zend/zend_execute.c" || {
+		echo "$RC exports __instance_signal, but zend_execute.c has no such word; apply patch-vm-interrupt.sh first"
+		exit 1
+	}
+	LINK_FLAGS="$LINK_FLAGS -Wl,--export=__instance_signal"
+}
 if [ -n "$COMPILE_FLAGS" ] || [ -n "$LINK_FLAGS" ]; then
 	# each value is QUOTED as one argument: an arm passing two compile flags produces
 	# `EXTRA_CFLAGS=-DX=1 -mbulk-memory`, and unquoted that hands make `-mbulk-memory` as an
@@ -155,11 +173,13 @@ grep -q 'ZEND_ALLOC=1' "$RC" && ABI="${ABI}-zendalloc"
 # the VM regeneration rewrites zend_vm_execute.h into a different handler shape, and -mtail-call
 # changes emitted code in every object; a tree compiled as CALL cannot be relinked into this
 grep -q 'TAIL_CALL=1' "$RC" && ABI="${ABI}-tailcall"
+# CFW_VM_JSPI changes the patched yield's objects, so a JSPI tree is not relinked as a stub build
+grep -q 'JSPI=1' "$RC" && ABI="${ABI}-jspi"
 ABI_STAMP="$SRC/.php-wasm-abi"
 WAS="$(cat "$ABI_STAMP" 2> /dev/null || echo wasm32)"
 if [ "$WAS" != "$ABI" ]; then
 	echo "the tree was built for $WAS and this is a $ABI build; forcing a reconfigure"
-	rm -f "$SRC/third_party/php${PHP_VERSION}-src/configured"
+	drop_configured "$SRC/third_party/php${PHP_VERSION}-src"
 fi
 printf '%s\n' "$ABI" > "$ABI_STAMP"
 MEMORY64=0
@@ -212,7 +232,7 @@ if grep -q -- '--enable-cfwpark' "$RC"; then
 	# main/internal_functions*.c only if it finds the header then, and without that include the
 	# static link fails on an undeclared phpext_cfwpark_ptr. Dropping the stamp is what guarantees
 	# the order on a tree that was already configured without the extension.
-	rm -f "$PHP_SRC/configured"
+	drop_configured "$PHP_SRC"
 	INSTALLED="$(docker run --rm -v "$PHP_SRC:/w" -w /w alpine:3 \
 		sh -c 'ls ext/cfwpark 2>/dev/null | tr "\n" " "' || true)"
 	case "$INSTALLED" in
