@@ -136,3 +136,10 @@ CONFIGURE_FLAGS+= --enable-cfwpark
 # verifies it before the build starts. Linked and checked 2026-11-17 against the worker's
 # tests/node/exit-lifecycle.spec.ts as `long64.pibfix-1`, which was this file plus this line.
 PIB_RUN_EXIT=1
+
+# The VM poll reads __instance_signal, which the host writes through the instance exports. Plain
+# substring match in build-variant.sh, so the bare line is the only place the key may appear.
+INSTANCE_SIGNAL=1
+
+# build.yml applies patch-vm-interrupt.sh when this is set, as it does for DROP_OPCACHE.
+VM_INTERRUPT=1

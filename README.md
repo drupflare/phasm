@@ -91,7 +91,7 @@ included, so `build-variant.sh` passes it as a make variable and stamps the ABI 
 
 | Variant       | What it is                                      | Note                                                                                               |
 | ------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `long64`      | `control85` with 64-bit `zend_long`             | **the shipping build.** `PHP_INT_SIZE` 8 for +16,181 raw bytes over `control85`                    |
+| `long64`      | `control85` with 64-bit `zend_long`             | **the shipping build.** `PHP_INT_SIZE` 8 for +16,181 raw bytes; VM patch via `VM_INTERRUPT=1`      |
 | `control`     | the 8.3 baseline the project started from       | reconstructed from the `CONFIGURE_COMMAND` string PHP compiles into the binary                     |
 | `control84`   | `control` at PHP 8.4                            | the midpoint that separates version drift from the 8.5 `ext/uri` + `ext/lexbor` bulk               |
 | `control85`   | `control` at PHP 8.5                            | the version Drupal 12 requires; `ext/uri` and `ext/lexbor` cannot be turned off from an rc         |

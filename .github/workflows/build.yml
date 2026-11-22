@@ -189,6 +189,16 @@ jobs:
           echo "RC=$RC" >> "$GITHUB_ENV"
           echo "PHP_VERSION=$(grep -m1 '^PHP_VERSION=' "$RC" | cut -d= -f2)" >> "$GITHUB_ENV"
 
+      - name: Decide the VM Interrupt Patch
+        id: vmpatch
+        run: |
+          patch=false
+          if grep -qE '^VM_INTERRUPT=1' "$RC" || [ '${{ inputs.patch_vm_interrupt }}' = 'true' ]; then
+            patch=true
+          fi
+          echo "vm interrupt patch: $patch"
+          echo "patch=$patch" >> "$GITHUB_OUTPUT"
+
       - name: Ensure GNU make 4.4 or Newer
         run: |
           have=$(make --version | head -1 | grep -oE '[0-9]+\.[0-9]+' | head -1)
@@ -285,15 +295,15 @@ jobs:
           fi
 
       - name: Apply the VM Interrupt Patch
-        if: ${{ inputs.patch_vm_interrupt }}
+        if: ${{ steps.vmpatch.outputs.patch == 'true' }}
         run: PHP_VERSION="$PHP_VERSION" bash src/patch-vm-interrupt.sh "$PHP_WASM_DIR"
 
       - name: Verify the VM Interrupt Patch Applied
-        if: ${{ inputs.patch_vm_interrupt }}
+        if: ${{ steps.vmpatch.outputs.patch == 'true' }}
         run: PHP_VERSION="$PHP_VERSION" bash src/patch-vm-interrupt.sh "$PHP_WASM_DIR" --verify
 
       - name: Verify the Tree Is NOT Patched When It Should Not Be
-        if: ${{ !inputs.patch_vm_interrupt }}
+        if: ${{ steps.vmpatch.outputs.patch != 'true' }}
         run: |
           if PHP_VERSION="$PHP_VERSION" bash src/patch-vm-interrupt.sh "$PHP_WASM_DIR" --verify; then
             echo "::error::the tree is patched but this variant asked for an unpatched control" >&2
@@ -423,7 +433,7 @@ jobs:
           if grep -q 'JSPI=1' "$RC"; then
             ARGS+=(--expect-jspi)
           fi
-          if [ "${{ inputs.patch_vm_interrupt }}" = 'true' ]; then
+          if [ "${{ steps.vmpatch.outputs.patch }}" = 'true' ]; then
             ARGS+=(--expect-slice)
           fi
           if grep -qE '^DROP_OPCACHE=1' "$RC"; then
@@ -478,7 +488,7 @@ jobs:
             echo "| php-wasm commit | \`$PHP_WASM_SHA\` |"
             echo "| rc sha256 | \`$(sha256sum "$RC" | cut -d' ' -f1)\` |"
             echo "| builder image | \`$BUILDER_IMAGE_PINNED\` |"
-            echo "| vm interrupt patch | ${{ inputs.patch_vm_interrupt || false }} |"
+            echo "| vm interrupt patch | ${{ steps.vmpatch.outputs.patch }} |"
             echo "| this repo | \`${{ github.sha }}\` |"
             echo
             echo '```txt'

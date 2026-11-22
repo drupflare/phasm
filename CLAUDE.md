@@ -211,9 +211,12 @@ Every one of these has already been paid for once.
   php-src patch by running it through the container against a real tree of the RIGHT PHP VERSION -- the
   opcache `PHP_NEW_EXTENSION` line is indented and bracket-free on 8.3 and unindented with a bracket on
   8.5, so a pattern tested on the wrong tree silently matches nothing.
-- **`patch-vm-interrupt.sh` is NOT a proven model for this.** It only runs when the
-  `patch_vm_interrupt` input is true, which defaults false on a push, so it has never executed in CI.
-  It was cited here as the working example; that was an unverified claim.
+- **`patch-vm-interrupt.sh` is NOT a proven model for this.** `long64.rc` sets `VM_INTERRUPT=1`, so
+  `build.yml` applies the patch for it; the `patch_vm_interrupt` input still covers other variants. A
+  paisley-park CI simulation on 2026-11-22 built `long64` with the patch: the artifact exports the three
+  slice symbols and `__instance_signal`, Node 26 prints 2 for `echo 1+1`, `arm(1000,0)` fires 1001 times
+  over a 1,000,000-iteration loop, and writing 0 to the signal word stops the count. Not verified: no
+  GitHub runner has built it, so the runner's build, emsdk cache and release steps are untested.
 - **A knowingly-unbuildable variant must be `.rc.pending`, not `.rc`.** `plan` discovers the matrix
   with `find src/rc -name '*.rc'`, which recurses, so a subdirectory does NOT hide one -- only the
   extension does. `src/rc/nolexbor85.rc` was added complete-but-unbuildable and failed every push
