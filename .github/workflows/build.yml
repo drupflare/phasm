@@ -176,6 +176,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 'latest'
+
+      - name: Install Dependencies
+        run: bun install --frozen-lockfile
+
       - name: Check the RC Exists
         run: |
           # a .rc.pending variant is invisible to the push matrix but buildable by dispatch, which

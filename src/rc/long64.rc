@@ -143,3 +143,8 @@ INSTANCE_SIGNAL=1
 
 # build.yml applies patch-vm-interrupt.sh when this is set, as it does for DROP_OPCACHE.
 VM_INTERRUPT=1
+
+# 8 MiB reaches the same PHP recursion depth as the old stack; the guard turns an overflow into a
+# clean trap where it would have written past the stack's end
+STACK_SIZE=8MB
+STACK_GUARD=1

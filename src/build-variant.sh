@@ -108,6 +108,15 @@ grep -q 'MALLOC=emmalloc' "$RC" && {
 # IMPORTED_MEMORY is link-only: it changes who CREATES the WebAssembly.Memory, not how code
 # addresses it
 grep -q 'IMPORTED_MEMORY=1' "$RC" && LINK_FLAGS="$LINK_FLAGS -sIMPORTED_MEMORY=1"
+# the C stack size is link-only too. php-wasm's Makefile hardcodes `-s TOTAL_STACK=32MB`, and
+# EXTRA_FLAGS lands after it on the emcc line, where the later setting wins. Anchored so a comment
+# naming the marker does not turn it on
+STACK_SIZE_RC="$(sed -n 's/^STACK_SIZE=//p' "$RC" | tail -n1)"
+[ -n "$STACK_SIZE_RC" ] && LINK_FLAGS="$LINK_FLAGS -sSTACK_SIZE=$STACK_SIZE_RC"
+if grep -q '^STACK_GUARD=1' "$RC" && [ ! -d "$ROOT/node_modules/binaryen" ]; then
+	echo "$RC asks for STACK_GUARD=1, which needs binaryen; run bun install in $ROOT first"
+	exit 1
+fi
 # Both link-only, and both are needed before a side module can be placed: the table has to grow to
 # hold a library's element segment, and `__stack_pointer` is one of the five globals every side
 # module imports. A build with only the first links the library and then cannot give it a stack.
@@ -313,6 +322,17 @@ elif [ "$PHP_VERSION" = 8.3 ] && [ -d "$ZEND" ]; then
 fi
 
 OUT="$OUT" JOBS="${JOBS:-8}" bash "$ROOT/src/build-static.sh" "$SRC"
+
+# the guard runs on the binary wasm-ld wrote, before any edit that moves the stack pointer global
+if grep -q '^STACK_GUARD=1' "$RC"; then
+	GUARDED=("$OUT"/*.wasm)
+	if [ "${#GUARDED[@]}" != 1 ]; then
+		echo "STACK_GUARD=1 expects one .wasm in $OUT"
+		exit 1
+	fi
+	node "$ROOT/src/stack-guard.mjs" "${GUARDED[0]}" "${GUARDED[0]}"
+	node "$ROOT/src/stack-guard.mjs" --verify "${GUARDED[0]}"
+fi
 
 if grep -q 'STACK_POINTER=import' "$RC"; then
 	WASMS=("$OUT"/*.wasm)
