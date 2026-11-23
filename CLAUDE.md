@@ -338,8 +338,8 @@ nothing.
 deliberate control and an accidentally-skipped step produce identical builds and identical logs.
 
 `bun run test` (`tools/test-patch-verify.sh`) drives all three modes over a synthetic tree with
-the two anchor macros: **19 assertions** for `patch-vm-interrupt.sh` and 23 more for
-`patch-pib-run.sh` (42 in all), no Docker, no php-src. It pins that `--revert` leaves
+the two anchor macros: **29 assertions** for `patch-vm-interrupt.sh` and 28 more for
+`patch-pib-run.sh` (57 in all), no Docker, no php-src. It pins that `--revert` leaves
 the file byte-identical, which is what makes the control a real A/B. Two bugs were found writing
 it, both in a grep pattern for the C line-continuation backslash - a shell single-quoted pair is
 one BRE backslash and a lone trailing one is a grep error - so if you edit those patterns, run

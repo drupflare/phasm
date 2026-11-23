@@ -427,6 +427,11 @@ static void park_hold(int kind) {
 	held = 1;
 }
 
+/* read by pib_run, which leaves a parked request's shutdown functions alone */
+int cfw_park_held(void) {
+	return held;
+}
+
 /** Installs the trap on one internal function; returns false when the name is not one. */
 PHP_FUNCTION(cfw_park_trap) {
 	zend_string* name;

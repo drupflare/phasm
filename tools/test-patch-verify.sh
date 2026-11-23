@@ -286,6 +286,12 @@ ok "pib: pib_exec was not touched" \
 	"$([ "$(grep -cF 'pib_settle_exit(output_level);' "$PIB_FIXTURE")" = "1" ] && echo 0 || echo 1)"
 ok "pib: basic_functions.h is included" \
 	"$(grep -qF '#include "ext/standard/basic_functions.h"' "$PIB_FIXTURE" && echo 0 || echo 1)"
+ok "pib: the shutdown clear sits between the level snapshot and the eval" \
+	"$(awk '/int output_level = php_output_get_level/ {l=NR} /if\(!cfw_park_held\(\)\)/ {c=NR} /php-wasm run script/ {e=NR} END {exit !(l < c && c < e)}' "$PIB_FIXTURE" && echo 0 || echo 1)"
+ok "pib: the clear is skipped through cfw_park_held, which is declared" \
+	"$(grep -qF 'int cfw_park_held(void);' "$PIB_FIXTURE" && echo 0 || echo 1)"
+ok "pib: pib_exec has no clear" \
+	"$([ "$(grep -cF 'if(!cfw_park_held())' "$PIB_FIXTURE")" = "1" ] && echo 0 || echo 1)"
 PIB_PATCHED="$(sum_of "$PIB_FIXTURE")"
 expect_exit 0 "pib: a second apply is a no-op" bash "$PIB_SCRIPT" "$PIB_TREE"
 ok "pib: the second apply changed nothing" \
@@ -300,6 +306,14 @@ case "$PIB_PARTIAL" in
 	*'found 0'*) ok "pib: the refusal names the call count it found" 0 ;;
 	*) ok "pib: the refusal names the call count it found (said: $PIB_PARTIAL)" 1 ;;
 esac
+
+write_pib_fixture
+bash "$PIB_SCRIPT" "$PIB_TREE" > /dev/null
+perl -0pi -e 's{\tif\(!cfw_park_held\(\)\)\n\t\{\n\t\tphp_free_shutdown_functions\(\);\n\t\}\n\n}{}' "$PIB_FIXTURE"
+expect_exit 1 "pib: --verify catches a pib_run that never clears shutdown functions" \
+	bash "$PIB_SCRIPT" "$PIB_TREE" --verify
+expect_exit 1 "pib: apply refuses a file an older patch left without the clear" \
+	bash "$PIB_SCRIPT" "$PIB_TREE"
 
 write_pib_fixture
 bash "$PIB_SCRIPT" "$PIB_TREE" > /dev/null

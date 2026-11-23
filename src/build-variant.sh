@@ -214,6 +214,11 @@ fi
 # no container. Applied and verified here so a local build cannot skip it, and the negative is
 # asserted so an unpatched control cannot be built from a checkout a patched arm already used.
 if grep -q '^PIB_RUN_EXIT=1' "$RC"; then
+	grep -q -- '--enable-cfwpark' "$RC" || {
+		echo "$RC sets PIB_RUN_EXIT=1, whose pib_run calls cfw_park_held from ext/cfwpark"
+		echo "add --enable-cfwpark to the rc"
+		exit 1
+	}
 	bash "$ROOT/src/patch-pib-run.sh" "$SRC"
 	bash "$ROOT/src/patch-pib-run.sh" "$SRC" --verify
 elif bash "$ROOT/src/patch-pib-run.sh" "$SRC" --verify > /dev/null 2>&1; then

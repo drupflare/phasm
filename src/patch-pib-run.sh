@@ -20,6 +20,12 @@
 # one long request (php_embed_init runs php_request_startup once), so destructors would mark every
 # live object destructed and wreck the booted globals, and end_all would pop buffers the host opened.
 #
+# It also frees the registered shutdown functions at the start of every pib_run. One long request
+# never reaches php_request_shutdown(), so a callback registered by a run that did not exit would
+# wait for a later run's exit() and fire under that run's user and request. ext/cfwpark owns the one
+# exception: a parked chain resumes in its own pib_run and its request's callbacks must survive, so
+# the clear is skipped while cfw_park_held() answers 1. PIB_RUN_EXIT arms must carry cfwpark.
+#
 # The file is php-wasm's own source/pib/pib.c in the checkout, not php-src, so it is host-writable.
 # The Makefile copies it into php-src (`ext/pib/pib.c: source/pib/pib.c`) when it is newer, which
 # means the patch has to land BEFORE the first configure of a checkout; a tree already configured
@@ -80,6 +86,22 @@ if [ "$MODE" = "--verify" ]; then
 	EVAL_LINE="$(grep -nF 'zend_eval_string(code, NULL, "php-wasm run script");' "$F" | head -1 | cut -d: -f1)"
 	CALL_LINE="$(grep -nF 'pib_settle_exit(output_level);' "$F" | head -1 | cut -d: -f1)"
 	SEND_LINE="$(grep -nF 'sapi_send_headers();' "$F" | head -1 | cut -d: -f1)"
+	LEVEL_LINE="$(grep -nF 'int output_level = php_output_get_level();' "$F" | head -1 | cut -d: -f1)"
+	CLEAR_LINE="$(grep -nF 'if(!cfw_park_held())' "$F" | head -1 | cut -d: -f1)"
+	CLEARS="$(grep -cF 'if(!cfw_park_held())' "$F" || true)"
+	if [ "$CLEARS" != "1" ]; then
+		echo "VERIFY FAIL: expected 1 guarded shutdown clear in pib_run, found $CLEARS"
+		FAILED=1
+	fi
+	if [ -z "$LEVEL_LINE" ] || [ -z "$CLEAR_LINE" ] || [ -z "$EVAL_LINE" ] \
+		|| [ "$CLEAR_LINE" -le "$LEVEL_LINE" ] || [ "$CLEAR_LINE" -ge "$EVAL_LINE" ]; then
+		echo "VERIFY FAIL: the clear must sit between the level snapshot (${LEVEL_LINE:-none}) and the eval (${EVAL_LINE:-none}); it is at ${CLEAR_LINE:-none}"
+		FAILED=1
+	fi
+	grep -qF 'int cfw_park_held(void);' "$F" || {
+		echo "VERIFY FAIL: cfw_park_held is not declared, so the guard would not compile"
+		FAILED=1
+	}
 	if [ -z "$EVAL_LINE" ] || [ -z "$CALL_LINE" ] || [ -z "$SEND_LINE" ] \
 		|| [ "$CALL_LINE" -le "$EVAL_LINE" ] || [ "$CALL_LINE" -ge "$SEND_LINE" ]; then
 		echo "VERIFY FAIL: the call must sit between the eval (${EVAL_LINE:-none}) and the header send (${SEND_LINE:-none}); it is at ${CALL_LINE:-none}"
@@ -89,7 +111,7 @@ if [ "$MODE" = "--verify" ]; then
 	if [ "$FAILED" != "0" ]; then
 		exit 1
 	fi
-	echo "verified $F: exit bracket present, 1 call site after the eval, output level snapshot taken"
+	echo "verified $F: exit bracket present, 1 call site after the eval, output level snapshot taken, shutdown clear guarded before the eval"
 	exit 0
 fi
 
@@ -99,11 +121,16 @@ if [ "$MODE" = "--revert" ]; then
 		exit 0
 	}
 elif grep -qF 'static void pib_settle_exit(int output_level)' "$F"; then
+	# a file patched by an older revision of this script has the bracket and not the clear
+	bash "$0" "$SRC" --verify || {
+		echo "$F carries an older patch; use a fresh php-wasm checkout"
+		exit 1
+	}
 	echo "already patched: $F"
 	exit 0
 fi
 
-# one program for apply and revert so both read the same four insertions and cannot drift apart
+# one program for apply and revert so both read the same five insertions and cannot drift apart
 python3 - "$F" "$MODE" << 'PY'
 import sys
 
@@ -111,7 +138,12 @@ path, mode = sys.argv[1], sys.argv[2]
 src = open(path).read()
 
 INCLUDE_ANCHOR = '#include "ext/standard/info.h"\n'
-INCLUDE_ADD = '#include "ext/standard/basic_functions.h"\n'
+INCLUDE_ADD = (
+	'#include "ext/standard/basic_functions.h"\n'
+	'\n'
+	'/* ext/cfwpark answers whether a parked chain is waiting for its resume */\n'
+	'int cfw_park_held(void);\n'
+)
 
 HELPER_ANCHOR = '/**\n * Run some PHP code and return the exit code.\n'
 HELPER = '''/* #region drupflare pib_run exit bracket */
@@ -158,15 +190,29 @@ LEVEL_PATCHED = (
 EVAL_ANCHOR = '\t\tretVal = zend_eval_string(code, NULL, "php-wasm run script");\n'
 EVAL_PATCHED = EVAL_ANCHOR + '\n\t\tpib_settle_exit(output_level);\n'
 
+CLEAR_ANCHOR = LEVEL_PATCHED
+CLEAR_PATCHED = (
+	'\tint retVal = 255; // Unknown error.\n'
+	'\tint output_level = php_output_get_level();\n\n'
+	'\t/* a request\'s callbacks die with it, except a parked chain\'s, which resumes in this run */\n'
+	'\tif(!cfw_park_held())\n'
+	'\t{\n'
+	'\t\tphp_free_shutdown_functions();\n'
+	'\t}\n\n'
+	'\tzend_try\n'
+)
+
 # (original, patched) pairs; apply replaces the first with the second, revert the reverse
 EDITS = [
 	(INCLUDE_ANCHOR, INCLUDE_ANCHOR + INCLUDE_ADD),
 	(HELPER_ANCHOR, HELPER + HELPER_ANCHOR),
 	(LEVEL_ANCHOR, LEVEL_PATCHED),
 	(EVAL_ANCHOR, EVAL_PATCHED),
+	(CLEAR_ANCHOR, CLEAR_PATCHED),
 ]
 
-for original, patched in EDITS:
+# the clear edit builds on the level edit, so a revert has to undo them in the opposite order
+for original, patched in (EDITS if mode != '--revert' else reversed(EDITS)):
 	old, new = (original, patched) if mode != '--revert' else (patched, original)
 	if src.count(old) != 1:
 		shape = 'the patched shape' if mode == '--revert' else 'the expected shape'
